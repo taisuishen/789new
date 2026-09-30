@@ -1,0 +1,134 @@
+server:
+  port: 8108
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-promotion
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  jackson:
+    deserialization:
+      # promotion terms arrive as JSON trees (rates, caps): never let them pass through double
+      use-big-decimal-for-floats: true
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 500
+        max-connections-per-route: 250
+      client:
+        # Per-client keys are the @FeignClient contextId (walletClient, userClient), not the service name.
+        # Feign never retries: a timed-out wallet call is an unknown outcome, retried later with the same bizNo.
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 2000
+          walletClient:
+            connect-timeout: 500
+            read-timeout: 3000
+          userClient:
+            connect-timeout: 500
+            read-timeout: 2000
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_promotion?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=10000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: promotion-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: 4
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      # the outbox relay waits for the broker: never lose an acknowledged business event
+      acks: all
+      properties:
+        enable.idempotence: true
+    listener:
+      ack-mode: batch
+      concurrency: 3
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 10
+  global-config:
+    banner: false
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      appname: ${spring.application.name}
+      port: 9108
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  outbox:
+    enabled: true
+  promotion:
+    # stat_date of valid bets and rebates is the calendar day in this zone
+    business-zone: "+08:00"
+    # every pod reloads the ONLINE promotions (table promotion, the source of truth) this often
+    catalog-refresh-interval: 30s
+    # a player's line is cached this long for the activity list
+    user-line-cache-ttl: 30s
+    # rebate and first-deposit terms (rates, caps, wagering) are set per promotion in the promotion table
+    first-deposit:
+      # global kill switch in front of every FIRST_DEPOSIT promotion: keep disabled until explicit player opt-in /
+      # bonus terms acceptance exists (see BonusGrantService)
+      enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

@@ -1,0 +1,36 @@
+# bingo-bet-record on its own 16 TaurusDB instances (1M online: ~250k wallet events/s in, ~125k rounds/s written).
+# Loaded by service-template.yaml through the optional ConfigMap <service>-env. Apply BEFORE rendering the
+# template for bingo-bet-record (env from a ConfigMap is read at pod start).
+#
+# Same user -> logical shard hash as the wallet (1024 logical shards, 64 per database bingo_bet_record_NN, created
+# with deploy/sql/shard_schemas.sh bet_record); BET_RECORD_DB_HOST_NN is the instance of database NN. Several
+# databases may share an instance until they are moved (bingo-bet-record-service application-sharding.yml).
+# bet_pull_checkpoint lives on ds00.
+# Each instance: 1 primary + 1 cross-AZ read replica; TaurusDB Serverless works (TCU range per docs/capacity-1m.md).
+# Routes / migrating shards are changed at runtime in Nacos (bingo-bet-record.yaml), not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bingo-bet-record-env
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-bet-record
+    app.kubernetes.io/part-of: bingo
+data:
+  SPRING_PROFILES_ACTIVE: "sharding"
+  BET_RECORD_DB_HOST_00: "__TAURUSDB_BETRECORD_DS0_HOST__"
+  BET_RECORD_DB_HOST_01: "__TAURUSDB_BETRECORD_DS1_HOST__"
+  BET_RECORD_DB_HOST_02: "__TAURUSDB_BETRECORD_DS2_HOST__"
+  BET_RECORD_DB_HOST_03: "__TAURUSDB_BETRECORD_DS3_HOST__"
+  BET_RECORD_DB_HOST_04: "__TAURUSDB_BETRECORD_DS4_HOST__"
+  BET_RECORD_DB_HOST_05: "__TAURUSDB_BETRECORD_DS5_HOST__"
+  BET_RECORD_DB_HOST_06: "__TAURUSDB_BETRECORD_DS6_HOST__"
+  BET_RECORD_DB_HOST_07: "__TAURUSDB_BETRECORD_DS7_HOST__"
+  BET_RECORD_DB_HOST_08: "__TAURUSDB_BETRECORD_DS8_HOST__"
+  BET_RECORD_DB_HOST_09: "__TAURUSDB_BETRECORD_DS9_HOST__"
+  BET_RECORD_DB_HOST_10: "__TAURUSDB_BETRECORD_DS10_HOST__"
+  BET_RECORD_DB_HOST_11: "__TAURUSDB_BETRECORD_DS11_HOST__"
+  BET_RECORD_DB_HOST_12: "__TAURUSDB_BETRECORD_DS12_HOST__"
+  BET_RECORD_DB_HOST_13: "__TAURUSDB_BETRECORD_DS13_HOST__"
+  BET_RECORD_DB_HOST_14: "__TAURUSDB_BETRECORD_DS14_HOST__"
+  BET_RECORD_DB_HOST_15: "__TAURUSDB_BETRECORD_DS15_HOST__"

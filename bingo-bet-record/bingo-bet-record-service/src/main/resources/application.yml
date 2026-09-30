@@ -1,0 +1,142 @@
+server:
+  port: 8105
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-bet-record
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 500
+        max-connections-per-route: 250
+      client:
+        config:
+          # Keys are Feign contextIds (OpenFeign looks client config up by contextId).
+          providerQueryClient:
+            connect-timeout: 1000
+            # bet-history pages and round resolution call the provider synchronously
+            read-timeout: 30000
+          userClient:
+            # one lookup of up to 1000 player lines per pulled page
+            connect-timeout: 500
+            read-timeout: 3000
+          lobbyClient:
+            # game catalogue loads (cached, at most once a minute per provider); an outage falls back to OTHER
+            connect-timeout: 500
+            read-timeout: 3000
+  datasource:
+    # Player history reads may go to TaurusDB read replicas; the ledger consumer and jobs pin their
+    # read-modify-write paths to the primary with MasterRoute.
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_bet_record?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: bet-record-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:32}
+      minimum-idle: 8
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        # sends happen after DB commit on the consumer thread: never block it for the 60s default
+        max.block.ms: 5000
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 5
+    # never serve a locking read (SELECT ... FOR UPDATE) from MyBatis' session cache
+    local-cache-scope: statement
+  global-config:
+    banner: false
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  bet-record:
+    consumer-concurrency: 3
+    unsettled-threshold: 30m
+    # Per-provider overrides. Use bracket keys for codes with characters other than letters, digits and '-':
+    # unsettled-threshold-by-provider:
+    #   "[PG_SOFT]": 2h
+    max-resolve-attempts: 12
+    batch-size: 200
+    round-lookback-days: 1
+    late-event-lookback-days: 7
+    republish-delay: 2m
+    # betRecordPartitionJob: full months kept before the current one (players see ~60 days of rounds; history for
+    # reports is in StarRocks). round_txn must outlive the Kafka retention + replay window.
+    partition-keep-months: 2
+    pull:
+      overlap: 5m
+      settle-delay: 2m
+      max-window: 30m
+      page-size: 500
+      page-interval: 200ms
+      max-pages: 2000
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      port: 9105
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

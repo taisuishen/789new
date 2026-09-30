@@ -1,0 +1,307 @@
+# KEDA (keda.sh/v1alpha1) scaling for the Kafka consumers: bingo-bet-record, bingo-reconcile, bingo-turnover,
+# bingo-promotion. Checked against the KEDA 2.21 docs (ScaledObject spec, apache-kafka, cpu and cron scalers).
+#
+# Installation: KEDA is NOT a CCE add-on (it is absent from the CCE add-on list), install it with Helm:
+#     helm repo add kedacore https://kedacore.github.io/charts
+#     helm install keda kedacore/keda --namespace keda --create-namespace --version <chart for your k8s>
+#   Pick the KEDA version from its compatibility matrix (e.g. KEDA 2.21 -> Kubernetes 1.34-1.36, 2.18 -> 1.31-1.33).
+#   Images come from ghcr.io; mirror them to SWR if the nodes have no internet egress.
+#   Only ONE APIService may serve external.metrics.k8s.io per cluster - check
+#     kubectl get apiservice v1beta1.external.metrics.k8s.io
+#   before installing (it must end up pointing at keda-operator-metrics-apiserver).
+#   The cpu triggers need the resource metrics API (CCE add-on "Kubernetes Metrics Server", or the cloud-native
+#   monitoring add-on's adapter) and pod CPU requests (set in service-template.yaml).
+#
+# ONE AUTOSCALER PER WORKLOAD: KEDA creates and owns an HPA (keda-hpa-<name>) for each ScaledObject. A workload
+#   must have EITHER an HPA OR a ScaledObject: KEDA's admission webhook rejects a ScaledObject whose target is
+#   already scaled by another HPA. That is why the consumers get no entry in autoscaling-hpa.yaml, and why the
+#   CPU signal is a KEDA cpu trigger here instead of a separate HPA. Never point a CCE CronHPA at a
+#   keda-hpa-* object (KEDA reconciles it back); scheduled floors for KEDA workloads use KEDA cron triggers.
+#
+# Replica math:
+#   - lagThreshold is the target lag PER POD (metricType AverageValue): desired = total group lag / lagThreshold.
+#     Values below ~ 5 s of work per pod at the estimated per-pod throughput; re-derive after the load test.
+#   - The Kafka scaler caps desired replicas at the topic's partition count assuming ONE consumer per pod. Our
+#     pods run 3 listener threads (concurrency 3), so maxReplicaCount = partitions / 3:
+#       bingo.wallet.txn    192 partitions -> 64 pods;  bingo.round.settled 96 -> 32;  bingo.provider.bet 24 -> 8.
+#   - offsetResetPolicy must match spring.kafka.consumer.auto-offset-reset (earliest): a group with no committed
+#     offset then reports the whole topic as lag and scales straight to max (catch-up), which is intended.
+#   - With minReplicaCount > 0 KEDA serves the HPA's own 15s metric polls (pollingInterval matters little).
+# Rebalances: every scale step is a consumer-group rebalance, so scale-up is stepped (+50% / +8 pods per 30s)
+#   rather than 100% per 15s. Application side (owned by the service teams): static membership
+#   (group.instance.id = POD_NAME - stable for StatefulSets) + CooperativeStickyAssignor, see docs/capacity-1m.md.
+#
+# Consumer group ids (from the @KafkaListener annotations in the Java sources):
+#   bingo-bet-record          WalletTxnConsumer        topic bingo.wallet.txn
+#   bingo-reconcile-platform  PlatformLedgerConsumer   topic bingo.wallet.txn
+#   bingo-reconcile-provider  ProviderBetConsumer      topic bingo.provider.bet
+#   bingo-turnover            turnover RoundSettledListener  topic bingo.round.settled
+#   bingo-promotion-validbet  promotion RoundSettledListener topic bingo.round.settled
+---
+# DMS for Kafka, SASL_SSL listener (private network port 9093 - verify in the instance's connection info).
+# Credentials come from Secret keda-dms-kafka (placeholder in secrets-example.yaml; production: DEW/CSMS):
+#   sasl=scram_sha512 (or "plaintext" for SASL/PLAIN), username/password of a DEDICATED read-only DMS user with
+#   subscribe permission on the three topics, tls=enable, ca=<PEM CA certificate downloaded from the DMS console>.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: dms-kafka-sasl-ssl
+  namespace: bingo
+spec:
+  secretTargetRef:
+    - parameter: sasl
+      name: keda-dms-kafka
+      key: sasl
+    - parameter: username
+      name: keda-dms-kafka
+      key: username
+    - parameter: password
+      name: keda-dms-kafka
+      key: password
+    - parameter: tls
+      name: keda-dms-kafka
+      key: tls
+    - parameter: ca
+      name: keda-dms-kafka
+      key: ca
+---
+# bingo-bet-record: builds game_round from bingo.wallet.txn (~250k msg/s, ~100 MB/s at peak) and publishes
+# bingo.round.settled. 12 (off-peak) .. 64 pods (192 partitions / 3 threads).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: bingo-bet-record
+  namespace: bingo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: bingo-bet-record
+  pollingInterval: 15
+  minReplicaCount: 12
+  maxReplicaCount: 64
+  fallback:                          # Kafka metrics unavailable 4x in a row -> hold 32 pods (cpu trigger still works)
+    failureThreshold: 4
+    replicas: 32
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30
+            - type: Pods
+              value: 8
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Percent
+              value: 10
+              periodSeconds: 60
+  triggers:
+    - type: kafka
+      authenticationRef:
+        name: dms-kafka-sasl-ssl
+      metadata:
+        bootstrapServers: "__DMS_KAFKA_SASL_BROKERS__"   # e.g. 192.168.0.11:9093,192.168.0.12:9093,192.168.0.13:9093
+        consumerGroup: bingo-bet-record
+        topic: bingo.wallet.txn
+        lagThreshold: "20000"
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"
+        # verify: DMS certificates are not issued for the broker IPs (DMS tells Java clients to disable hostname
+        # verification). If the scaler logs an x509 hostname error, set "true": traffic stays encrypted inside
+        # the VPC but the broker identity is no longer checked.
+        unsafeSsl: "false"
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"                  # throughput-bound consumer: higher utilisation than the online tier
+    # Pre-scale before the evening ramp so the rebalances happen before the traffic does (UTC+8; KEDA cron
+    # triggers take an IANA time zone, so this is independent of node / controller time zones).
+    - type: cron
+      metadata:
+        timezone: Asia/Manila
+        start: "30 18 * * *"
+        end: "15 1 * * *"
+        desiredReplicas: "32"
+---
+# bingo-reconcile: platform ledger (bingo.wallet.txn) + provider bet records (bingo.provider.bet); hourly /
+# daily reconciliation. 8..32 pods; the provider.bet trigger alone never asks for more than 8 (24 partitions / 3).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: bingo-reconcile
+  namespace: bingo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: bingo-reconcile
+  pollingInterval: 15
+  minReplicaCount: 8
+  maxReplicaCount: 32
+  fallback:
+    failureThreshold: 4
+    replicas: 16
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30
+            - type: Pods
+              value: 4
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Percent
+              value: 10
+              periodSeconds: 60
+  triggers:
+    - type: kafka
+      authenticationRef:
+        name: dms-kafka-sasl-ssl
+      metadata:
+        bootstrapServers: "__DMS_KAFKA_SASL_BROKERS__"
+        consumerGroup: bingo-reconcile-platform
+        topic: bingo.wallet.txn
+        lagThreshold: "20000"
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"
+        unsafeSsl: "false"           # verify: see bingo-bet-record
+    - type: kafka
+      authenticationRef:
+        name: dms-kafka-sasl-ssl
+      metadata:
+        bootstrapServers: "__DMS_KAFKA_SASL_BROKERS__"
+        consumerGroup: bingo-reconcile-provider
+        topic: bingo.provider.bet
+        lagThreshold: "5000"
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"
+        unsafeSsl: "false"
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"
+---
+# bingo-turnover: wagering requirements (稽核) from bingo.round.settled (~125k msg/s at peak). 8..32 pods.
+# Most rounds belong to players without an open requirement and cost one shared IN query per shard and batch.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: bingo-turnover
+  namespace: bingo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: bingo-turnover
+  pollingInterval: 15
+  minReplicaCount: 8
+  maxReplicaCount: 32
+  fallback:
+    failureThreshold: 4
+    replicas: 16
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30
+            - type: Pods
+              value: 4
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Percent
+              value: 10
+              periodSeconds: 60
+  triggers:
+    - type: kafka
+      authenticationRef:
+        name: dms-kafka-sasl-ssl
+      metadata:
+        bootstrapServers: "__DMS_KAFKA_SASL_BROKERS__"
+        consumerGroup: bingo-turnover
+        topic: bingo.round.settled
+        lagThreshold: "10000"
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"
+        unsafeSsl: "false"           # verify: see bingo-bet-record
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"
+---
+# bingo-promotion: valid-bet accumulation for rebates from bingo.round.settled. 8..32 pods.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: bingo-promotion
+  namespace: bingo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: bingo-promotion
+  pollingInterval: 15
+  minReplicaCount: 8
+  maxReplicaCount: 32
+  fallback:
+    failureThreshold: 4
+    replicas: 16
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          selectPolicy: Max
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30
+            - type: Pods
+              value: 4
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Percent
+              value: 10
+              periodSeconds: 60
+  triggers:
+    - type: kafka
+      authenticationRef:
+        name: dms-kafka-sasl-ssl
+      metadata:
+        bootstrapServers: "__DMS_KAFKA_SASL_BROKERS__"
+        consumerGroup: bingo-promotion-validbet
+        topic: bingo.round.settled
+        lagThreshold: "10000"
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"
+        unsafeSsl: "false"           # verify: see bingo-bet-record
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"

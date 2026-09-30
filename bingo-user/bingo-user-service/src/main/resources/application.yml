@@ -1,0 +1,131 @@
+server:
+  port: 8101
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-user
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # Pooled Apache HttpClient 5 (feign-hc5). A route is one target instance (host:port) resolved by the
+      # load balancer, so per-route bounds the connections to a single wallet pod.
+      httpclient:
+        max-connections: 1000
+        max-connections-per-route: 500
+        hc5:
+          enabled: true
+          # Wait for a free pooled connection at most 1s (library default: 3 minutes). With virtual threads the
+          # pool is the only bound on concurrent calls, so an exhausted pool must fail fast, not queue callers.
+          connection-request-timeout: 1
+          connection-request-timeout-unit: seconds
+      client:
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 2000
+          # Per-client settings are keyed by the @FeignClient contextId ("walletClient"), not by the service name.
+          walletClient:
+            connect-timeout: 300
+            read-timeout: 1500
+  datasource:
+    # Default reads may be served by TaurusDB read replicas; compliance gates use MasterRoute.
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_user?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=3000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: user-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:32}
+      minimum-idle: 8
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 200ms
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 3
+  global-config:
+    banner: false
+
+# Job handlers to register in XXL-Job admin (both: every minute, "discard later" blocking strategy):
+#   rgExpiryJob          - lifts wallet BET_LOCKED after self-exclusion / cool-off expiry
+#   rgWalletLockRetryJob - re-sends BET_LOCKED when the wallet call failed at exclusion time
+# Optional job param: batch size (default 200).
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      port: 9101
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  compliance:
+    min-age: 21
+    allowed-countries: PH
+    allowed-currencies: PHP
+    kyc-required-for-play: true
+    kyc-required-for-deposit: false
+    time-zone: "+08:00"
+  session:
+    ttl: 12h
+    max-failed-logins: 5
+    failed-login-window: 15m
+  game-token:
+    ttl: 4h
+  rg:
+    # Licence-specific; confirm the periods with compliance before go-live.
+    limit-increase-cooldown: 24h
+    cool-off-min-hours: 24
+    cool-off-max-hours: 1008
+    self-exclusion-min-days: 180
+    self-exclusion-max-days: 1825
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

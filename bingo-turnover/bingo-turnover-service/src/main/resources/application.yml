@@ -1,0 +1,112 @@
+server:
+  port: 8110
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-turnover
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); only back-office calls use Feign here
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 200
+        max-connections-per-route: 100
+      client:
+        # Per-client keys are the @FeignClient contextId (userClient), not the service name.
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 3000
+  # Single database without the "sharding" profile (local development); production: application-sharding.yml
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_turnover?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: turnover-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: 4
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: batch
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 5
+  global-config:
+    banner: false
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      appname: ${spring.application.name}
+      port: 9110
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  turnover:
+    # deposit play-through for lines / currencies without a turnover_setting row (0 = none)
+    default-deposit-multiplier: 1.0
+    # listener threads per pod; bingo.round.settled has 96 partitions (3 per pod -> at most 32 useful pods)
+    consumer-concurrency: 3
+    settings-refresh: 30s
+    # turnoverPartitionJob: full months of 稽核记录 kept before the current one
+    record-keep-months: 6
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

@@ -1,0 +1,278 @@
+# bingo-game-integration - serves provider callbacks /callback/{provider}/{action} (bet, payout, rollback, ...).
+#
+# Sizing for 1,000,000 concurrent players (docs/capacity-1m.md; estimates until confirmed by load tests):
+#   ~250k callback QPS at peak (design 400k) -> ~100 pods at peak, HPA 20..160, 4 vCPU / 8 GiB each, on the
+#   dedicated callback node pool. Scaling: HPA on CPU (50%) + CCE CronHPA pre-warming for known peaks; the
+#   cluster autoscaler adds callback nodes.
+#
+# Physically isolated from player traffic so a player-side spike or attack never affects in-flight bets/payouts:
+#   - own domain + own ELB + own Ingress (ingress-callback.yaml); player traffic enters only via bingo-gateway;
+#   - own node pool: create a dedicated CCE node pool spread over all AZs with Kubernetes label
+#     bingo.io/pool=callback and taint bingo.io/pool=callback:NoSchedule, so no other workload can be scheduled
+#     there (node affinity + toleration below);
+#   - PriorityClass bingo-critical, Guaranteed QoS, PDB, zone spread.
+# StatefulSet for WORKER_ID (apps.kubernetes.io/pod-index), see bingo-wallet.yaml.
+# TaurusDB/wallet failover: callbacks answer "system error, retry" in the provider's own format (application
+# level) and the provider retries with the same transaction id.
+#
+# Tomcat / JVM: server.tomcat.max-connections, server.tomcat.threads.*, accept-count, the 64KB request limits
+# and virtual threads are configured in the application, not here. Callbacks do not touch the database (only
+# the low-volume transfer-wallet orders do), hence the small DB pool below.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bingo-game-integration-headless
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-game-integration
+    app.kubernetes.io/part-of: bingo
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: bingo-game-integration
+  ports:
+    - name: http
+      port: 8103
+      targetPort: http
+    - name: xxl
+      port: 9103
+      targetPort: xxl
+---
+# Backend of the callback Ingress. ClusterIP works with a dedicated ELB on CCE Turbo (pass-through to pods);
+# on a CCE standard cluster LoadBalancer Ingress backends must be NodePort - change type accordingly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bingo-game-integration
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-game-integration
+    app.kubernetes.io/part-of: bingo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: bingo-game-integration
+  ports:
+    - name: http
+      port: 8103
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bingo-game-integration
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-game-integration
+    app.kubernetes.io/part-of: bingo
+spec:
+  serviceName: bingo-game-integration-headless
+  # replicas is owned by the HPA (minReplicas 20); not set here so a re-apply never shrinks a scaled-out tier.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%            # verify: needs the MaxUnavailableStatefulSet feature gate (see bingo-wallet.yaml)
+  minReadySeconds: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bingo-game-integration
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bingo-game-integration
+        app.kubernetes.io/part-of: bingo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8103"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      priorityClassName: bingo-critical
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Callback node pool only - never the general pool.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: bingo.io/pool
+                    operator: In
+                    values: [callback]
+      tolerations:
+        - key: bingo.io/pool
+          operator: Equal
+          value: callback
+          effect: NoSchedule
+      # preStop (15s) + graceful shutdown of in-flight callbacks (20s) + margin
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        # Soft zone spread: a hard (DoNotSchedule) constraint would block scale-up when one AZ of the callback pool
+        # is out of capacity. The scheduler still balances the pool across the 3 AZs; the pool itself must span all
+        # 3 AZs with equal min sizes.
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: bingo-game-integration
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: bingo-game-integration
+      containers:
+        - name: app
+          image: __REGISTRY__/bingo-game-integration:__TAG__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8103
+            - name: xxl
+              containerPort: 9103
+          envFrom:
+            - configMapRef:
+                name: bingo-common-env
+            - secretRef:
+                name: bingo-common-secret
+          env:
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.labels['apps.kubernetes.io/pod-index']"
+            - name: DB_HOST
+              value: "__TAURUSDB_SHARED_HOST__"     # bingo_game schema
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: bingo-game-integration-db
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bingo-game-integration-db
+                  key: DB_PASSWORD
+            # Shared TaurusDB connection budget: 160 pods x 4 = 640 (application.yml hard-codes 20, which would be
+            # 3,200 connections at maxReplicas). Environment variables override application.yml and Nacos config.
+            - name: SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE
+              value: "4"
+            - name: XXL_JOB_EXECUTOR_PORT
+              value: "9103"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_SERVICE_NAME
+              value: bingo-game-integration
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=bingo,k8s.pod.name=$(POD_NAME)"
+          resources:                         # Guaranteed QoS
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: applogs
+              mountPath: /data/applogs
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: applogs
+          emptyDir:
+            sizeLimit: 1Gi
+---
+# The HPA sets the replica count; CronHPA (autoscaling-cronhpa.yaml) only moves minReplicas at known peaks.
+# The callback node pool must be able to grow to maxReplicas: 160 pods / 6 pods per 32-vCPU node
+# = 27 nodes (docs/capacity-1m.md).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bingo-game-integration
+  namespace: bingo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: bingo-game-integration
+  minReplicas: 20                    # off-peak baseline (~1/5 of peak)
+  maxReplicas: 160                   # design capacity 400k callback QPS (~2.5k QPS per pod at 50% CPU)
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 10
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bingo-game-integration
+  namespace: bingo
+spec:
+  maxUnavailable: 10%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bingo-game-integration

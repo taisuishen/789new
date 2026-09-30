@@ -1,0 +1,2 @@
+com.bingo789.common.mybatis.BingoMybatisAutoConfiguration
+com.bingo789.common.mybatis.shard.BingoShardAutoConfiguration

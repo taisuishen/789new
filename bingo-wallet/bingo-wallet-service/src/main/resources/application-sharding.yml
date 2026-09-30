@@ -1,0 +1,122 @@
+# Production wallet: SPRING_PROFILES_ACTIVE=sharding
+# 1024 logical shards (fixed forever: hash of user_id) in 16 databases bingo_wallet_00..15 (datasources ds00..ds15,
+# 64 logical shards each). Any number of these databases may share a TaurusDB instance (test environment: all 16 on
+# one); capacity grows by MOVING whole databases to new instances. The hash and the shard -> database map never
+# change. routes / migrating-shards are hot-reloaded from Nacos (bingo-wallet.yaml); datasources need a rolling restart.
+#
+# Moving databases to another instance, e.g. bingo_wallet_08..15 (shards 512-1023) from instance A to B:
+#   1. Nacos: add datasources ds08b..ds15b (B, databases bingo_wallet_08..15) and roll the pods. Routes still point at
+#      ds08..ds15, so nothing changes; scan / maintenance jobs ignore datasources that own no shard.
+#   2. DRS real-time synchronisation (full + incremental) of bingo_wallet_08..15 from A to B, while the service runs.
+#      A must keep its binlog for longer than the full copy takes. Pause walletTxnRetentionJob until step 4.
+#      Wait until the lag stays below a second and the DRS data comparison passes.
+#   3. At low traffic: publish migrating-shards: ["512-1023"] (writes of those players answer "retry"; providers retry
+#      with the same transaction id, idempotency prevents double debits), wait until the DRS lag is 0 (seconds), then
+#      publish the routes 512-1023 -> ds08b..ds15b and clear migrating-shards in ONE Nacos change.
+#   4. Start the Flink CDC job on B from the cutover time (scan.startup.mode = timestamp: rows copied by DRS must not
+#      become new ledger events), stop DRS, resume the jobs.
+#   5. After verification drop bingo_wallet_08..15 on A. Optional tidy-up at a later release: point
+#      WALLET_DB_HOST_08..15 at B, route back to ds08..ds15 (same databases, no freeze needed), remove ds08b..ds15b.
+# The first instance keeps bingo_wallet_00: it also holds the global tables (global-datasource: ds00).
+# Connections per TaurusDB primary = wallet pods x max-pool-size x databases on that instance (e.g. 100 x 8 x 1 = 800).
+
+wallet-jdbc-params: useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=3000&cachePrepStmts=true&useServerPrepStmts=false
+
+bingo:
+  shard:
+    enabled: true
+    logical-shards: 1024
+    global-datasource: ds00
+    pool:
+      max-pool-size: ${DB_POOL_SIZE:8}
+      min-idle: 2
+      connection-timeout: 1s
+    migrating-shards: []
+    datasources:
+      ds00:
+        url: jdbc:mysql://${WALLET_DB_HOST_00}:${DB_PORT:3306}/bingo_wallet_00?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds01:
+        url: jdbc:mysql://${WALLET_DB_HOST_01}:${DB_PORT:3306}/bingo_wallet_01?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds02:
+        url: jdbc:mysql://${WALLET_DB_HOST_02}:${DB_PORT:3306}/bingo_wallet_02?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds03:
+        url: jdbc:mysql://${WALLET_DB_HOST_03}:${DB_PORT:3306}/bingo_wallet_03?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds04:
+        url: jdbc:mysql://${WALLET_DB_HOST_04}:${DB_PORT:3306}/bingo_wallet_04?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds05:
+        url: jdbc:mysql://${WALLET_DB_HOST_05}:${DB_PORT:3306}/bingo_wallet_05?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds06:
+        url: jdbc:mysql://${WALLET_DB_HOST_06}:${DB_PORT:3306}/bingo_wallet_06?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds07:
+        url: jdbc:mysql://${WALLET_DB_HOST_07}:${DB_PORT:3306}/bingo_wallet_07?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds08:
+        url: jdbc:mysql://${WALLET_DB_HOST_08}:${DB_PORT:3306}/bingo_wallet_08?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds09:
+        url: jdbc:mysql://${WALLET_DB_HOST_09}:${DB_PORT:3306}/bingo_wallet_09?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds10:
+        url: jdbc:mysql://${WALLET_DB_HOST_10}:${DB_PORT:3306}/bingo_wallet_10?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds11:
+        url: jdbc:mysql://${WALLET_DB_HOST_11}:${DB_PORT:3306}/bingo_wallet_11?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds12:
+        url: jdbc:mysql://${WALLET_DB_HOST_12}:${DB_PORT:3306}/bingo_wallet_12?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds13:
+        url: jdbc:mysql://${WALLET_DB_HOST_13}:${DB_PORT:3306}/bingo_wallet_13?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds14:
+        url: jdbc:mysql://${WALLET_DB_HOST_14}:${DB_PORT:3306}/bingo_wallet_14?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds15:
+        url: jdbc:mysql://${WALLET_DB_HOST_15}:${DB_PORT:3306}/bingo_wallet_15?${wallet-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+    routes:
+      - { shards: "0-63", datasource: ds00 }
+      - { shards: "64-127", datasource: ds01 }
+      - { shards: "128-191", datasource: ds02 }
+      - { shards: "192-255", datasource: ds03 }
+      - { shards: "256-319", datasource: ds04 }
+      - { shards: "320-383", datasource: ds05 }
+      - { shards: "384-447", datasource: ds06 }
+      - { shards: "448-511", datasource: ds07 }
+      - { shards: "512-575", datasource: ds08 }
+      - { shards: "576-639", datasource: ds09 }
+      - { shards: "640-703", datasource: ds10 }
+      - { shards: "704-767", datasource: ds11 }
+      - { shards: "768-831", datasource: ds12 }
+      - { shards: "832-895", datasource: ds13 }
+      - { shards: "896-959", datasource: ds14 }
+      - { shards: "960-1023", datasource: ds15 }
+
+management:
+  health:
+    db:
+      # Boot's DB health check has no shard context; per-shard pool health is exported as hikaricp_* metrics
+      enabled: false

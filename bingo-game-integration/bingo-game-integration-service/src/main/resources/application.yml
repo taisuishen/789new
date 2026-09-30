@@ -1,0 +1,123 @@
+server:
+  port: 8103
+  shutdown: graceful
+  tomcat:
+    # 1M online: ~3k req/s per pod over keep-alive connections from the ELB and Feign pools
+    max-connections: 20000
+    accept-count: 2000
+    max-keep-alive-requests: -1
+    # callbacks are small; refuse anything bigger early
+    max-http-form-post-size: 64KB
+    max-swallow-size: 64KB
+
+spring:
+  application:
+    name: bingo-game-integration
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    sentinel:
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:}
+      # callbacks are guarded explicitly by CallbackRateLimiter; don't turn every URL into a resource
+      filter:
+        enabled: false
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 2000
+        max-connections-per-route: 1000
+      client:
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 2000
+          # keyed by the Feign contextId. Must stay well below the providers' callback timeout;
+          # never retry here (the provider retries with the same idempotency key)
+          walletClient:
+            connect-timeout: 200
+            read-timeout: 1500
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_game?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      maximum-pool-size: 20
+      connection-timeout: 1000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      port: 9103
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  secrets:
+    # CCE DEW/CSMS add-on mounts secrets here; "dew:csms/<name>" references resolve to <mount-path>/<name>
+    mount-path: ${BINGO_SECRETS_PATH:/mnt/csms}
+  callback:
+    # number of proxies (ELB/WAF) that append to X-Forwarded-For in front of this service
+    trusted-proxy-hops: 1
+    rate-limit:
+      per-provider-qps: 5000
+      per-player-qps: 30
+  # Provider definitions normally live in Nacos (bingo-game-integration.yaml). Local example:
+  providers:
+    DEMO:
+      enabled: true
+      wallet-mode: SEAMLESS
+      base-url: http://localhost:9999
+      operator-id: bingo789
+      secret: local-dev-secret
+      ip-whitelist-enabled: false
+      currencies: [PHP, USD]
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

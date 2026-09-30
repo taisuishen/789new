@@ -1,0 +1,115 @@
+server:
+  port: 8111
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-kyc
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  servlet:
+    multipart:
+      # bbwave_face rejects images above KYC_MAX_UPLOAD_MB (10 MB)
+      max-file-size: 10MB
+      max-request-size: 11MB
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 200
+        max-connections-per-route: 100
+      client:
+        # Per-client keys are the @FeignClient contextId (userClient), not the service name.
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 3000
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_kyc?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: kyc-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: 2
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 5
+  global-config:
+    banner: false
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      appname: ${spring.application.name}
+      port: 9111
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  secrets:
+    # CCE DEW/CSMS add-on mounts secrets here; "dew:csms/<name>" references resolve to <mount-path>/<name>
+    mount-path: ${BINGO_SECRETS_PATH:/mnt/csms}
+  obs:
+    enabled: ${OBS_ENABLED:true}
+    endpoint: ${OBS_ENDPOINT:https://obs.ap-southeast-3.myhuaweicloud.com}
+    # PRIVATE bucket for identity documents (no public read, no CDN): the worker and the back office get signed URLs
+    bucket: ${OBS_KYC_BUCKET:bingo-kyc}
+    # empty on CCE = node IAM agency; otherwise dew:csms/<name> references
+    access-key: ${OBS_ACCESS_KEY:}
+    secret-key: ${OBS_SECRET_KEY:}
+    public-base-url: ""
+    signed-url-ttl: 15m
+    max-image-size: 10MB
+    secrets-path: ${BINGO_SECRETS_PATH:/mnt/csms}
+  # RunPod / facecmp settings are in the config table (deploy/sql/11_kyc.sql), re-read every config-refresh
+  kyc:
+    config-refresh: 30s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

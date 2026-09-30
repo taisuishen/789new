@@ -1,0 +1,97 @@
+# Provider callbacks and payment-channel notifications: callback domain -> callback ELB -> pods.
+#   /callback/{provider}/{action}  -> bingo-game-integration (dedicated node pool)
+#   /notify/**                     -> bingo-payment
+#   /callback/runpod/**            -> bingo-kyc, on its own listener (second Ingress below)
+# Nothing else is routed: no /internal/**, no player APIs.
+#
+# Physical isolation from player traffic:
+#   - separate domain (preferably a separate registrable domain / DNS zone from the player domain);
+#   - separate dedicated ("performance") ELB instance with its own EIP and, ideally, its own subnet;
+#   - separate Ingress bound to that ELB by ID (each CCE LoadBalancer Ingress is programmed onto the ELB given by
+#     kubernetes.io/elb.id, which acts as the separate ingress class here). If you use NGINX Ingress instead, run a
+#     second controller with its own IngressClass and ELB, scheduled on the callback node pool.
+#
+# Source-IP whitelisting happens twice (defence in depth):
+#   1. here, at the ELB listener: an ELB IP address group containing every provider AND payment-channel callback
+#      IP (both paths share this listener), plus a WAF whitelist rule if Huawei WAF fronts this domain;
+#   2. in the application: bingo.providers.<CODE>.ip-whitelist (Nacos), checked against the client IP taken from
+#      X-Forwarded-For, which is trusted only when the request comes from the ELB subnet.
+# verify for your CCE version: the acl-* and timeout annotations need recent cluster versions and a dedicated ELB.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bingo-callback
+  namespace: bingo
+  labels:
+    app.kubernetes.io/part-of: bingo
+  annotations:
+    kubernetes.io/elb.class: performance
+    kubernetes.io/elb.id: "__CALLBACK_ELB_ID__"                    # NOT the player ELB
+    kubernetes.io/elb.port: "443"
+    kubernetes.io/elb.tls-certificate-ids: "__CALLBACK_CERT_ID__"
+    kubernetes.io/elb.tls-ciphers-policy: tls-1-2
+    # Listener access control: trustlist = provider + payment-channel IP address group.
+    kubernetes.io/elb.acl-id: "__CALLBACK_IP_GROUP_ID__"
+    kubernetes.io/elb.acl-status: "on"
+    kubernetes.io/elb.acl-type: white
+    # Fail fast: a provider has already given up after its own timeout (typically 3-10s).
+    kubernetes.io/elb.member_timeout: "10"
+spec:
+  ingressClassName: cce
+  rules:
+    - host: "__CALLBACK_HOST__"        # e.g. cb.<callback-domain>
+      http:
+        paths:
+          - path: /callback/
+            pathType: ImplementationSpecific
+            property:                  # CCE-specific field
+              ingress.beta.kubernetes.io/url-match-mode: STARTS_WITH
+            backend:
+              service:
+                name: bingo-game-integration
+                port:
+                  number: 8103
+          - path: /notify/
+            pathType: ImplementationSpecific
+            property:
+              ingress.beta.kubernetes.io/url-match-mode: STARTS_WITH
+            backend:
+              service:
+                name: bingo-payment
+                port:
+                  number: 8106
+---
+# RunPod webhooks (KYC results from the serverless worker). RunPod publishes no fixed egress IPs, so they cannot be
+# whitelisted on the 443 listener above; this Ingress puts them on a SEPARATE listener (port 8443) of the same
+# callback ELB without an IP ACL. The webhook URL carries a shared token (bingo_kyc.config RunPodWebhookToken), checked
+# in constant time by bingo-kyc; only /callback/runpod/ is routed on this listener.
+# Config row RunPodWebhookUrl = https://__CALLBACK_HOST__:8443/callback/runpod/kyc
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bingo-runpod-webhook
+  namespace: bingo
+  labels:
+    app.kubernetes.io/part-of: bingo
+  annotations:
+    kubernetes.io/elb.class: performance
+    kubernetes.io/elb.id: "__CALLBACK_ELB_ID__"
+    kubernetes.io/elb.port: "8443"
+    kubernetes.io/elb.tls-certificate-ids: "__CALLBACK_CERT_ID__"
+    kubernetes.io/elb.tls-ciphers-policy: tls-1-2
+    kubernetes.io/elb.member_timeout: "10"
+spec:
+  ingressClassName: cce
+  rules:
+    - host: "__CALLBACK_HOST__"
+      http:
+        paths:
+          - path: /callback/runpod/
+            pathType: ImplementationSpecific
+            property:
+              ingress.beta.kubernetes.io/url-match-mode: STARTS_WITH
+            backend:
+              service:
+                name: bingo-kyc
+                port:
+                  number: 8111

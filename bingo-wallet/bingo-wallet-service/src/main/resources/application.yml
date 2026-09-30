@@ -1,0 +1,108 @@
+server:
+  port: 8102
+  shutdown: graceful
+  tomcat:
+    # 1M online: ~3k req/s per pod over keep-alive connections from the ELB and Feign pools
+    max-connections: 20000
+    accept-count: 2000
+    max-keep-alive-requests: -1
+
+spring:
+  application:
+    name: bingo-wallet
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+  datasource:
+    # Wallet has its own TaurusDB instance. Every statement carries the FORCE_MASTER hint (bingo.mybatis.force-master).
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_wallet?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=3000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: wallet-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:64}
+      minimum-idle: 16
+      # short timeouts so the pool recovers quickly after a TaurusDB primary switchover
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 3
+  global-config:
+    banner: false
+
+bingo:
+  mybatis:
+    force-master: true
+    worker-id: ${WORKER_ID:-1}
+  wallet:
+    # Applies to provider-driven debits that cannot be refused (payout reversals, negative adjustments).
+    # ALLOW: balance may go negative and is recovered from future credits. REJECT: return INSUFFICIENT_FUNDS.
+    negative-balance-policy: ALLOW
+    events:
+      # Production: wallet_txn -> Flink CDC -> Kafka (deploy/flink). Enable only for local development.
+      after-commit-publish: ${WALLET_AFTER_COMMIT_PUBLISH:false}
+    # walletTxnRetentionJob: wallet_txn keeps the idempotency window only; history is in StarRocks (Routine Load from
+    # bingo.wallet.txn). Schedule the job only once that load is running.
+    retention:
+      keep: 7d
+      batch-size: 2000
+      pause-between-batches: 50ms
+      max-run-time: 30m
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      appname: ${spring.application.name}
+      port: ${XXL_JOB_EXECUTOR_PORT:9102}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

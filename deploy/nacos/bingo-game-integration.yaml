@@ -1,0 +1,28 @@
+# Nacos: Data ID = bingo-game-integration.yaml, Group = BINGO, format = YAML.
+# Provider (game studio / aggregator) integration settings, bound by bingo-game-integration.
+# Changing a provider here takes effect without redeploying; secrets are never stored in clear text.
+
+bingo:
+  callback:
+    # Applied to /callback/{provider}/{action} before any wallet call. The ELB/WAF whitelist and the
+    # per-provider ip-whitelist below are enforced in addition (defence in depth).
+    rate-limit:
+      per-provider-qps: 5000
+      per-user-qps: 30
+  providers:
+    DEMO:
+      enabled: true
+      wallet-mode: SEAMLESS        # or TRANSFER
+      base-url: https://api.demo-provider.example
+      operator-id: bingo789
+      secret: dew:csms/bingo-provider-demo-secret   # resolved from Huawei DEW CSMS; plain values allowed only in local dev
+      # Source IPs allowed to call /callback/DEMO/**. Must match the ELB IP address group / WAF whitelist.
+      ip-whitelist: [10.0.0.0/8, 203.0.113.10/32]
+      timestamp-tolerance: 300s
+      require-bet-for-payout: true
+      currencies: [PHP, USD]
+      # Outbound calls from us to the provider (launch URLs, queries, transfers) - not the callback path.
+      max-concurrency: 64
+      connect-timeout: 1s
+      read-timeout: 5s
+      circuit-breaker: { failure-rate-threshold: 50, slow-call-duration: 3s, wait-in-open-state: 30s }

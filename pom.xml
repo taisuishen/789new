@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.0.8</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.bingo789</groupId>
+    <artifactId>bingo-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>789bingo platform</name>
+    <description>Licensed online gaming aggregation platform (seamless + transfer wallet)</description>
+
+    <modules>
+        <module>bingo-common</module>
+        <module>bingo-gateway</module>
+        <module>bingo-user</module>
+        <module>bingo-wallet</module>
+        <module>bingo-game-integration</module>
+        <module>bingo-lobby</module>
+        <module>bingo-bet-record</module>
+        <module>bingo-payment</module>
+        <module>bingo-risk</module>
+        <module>bingo-promotion</module>
+        <module>bingo-reconcile</module>
+        <module>bingo-turnover</module>
+        <module>bingo-kyc</module>
+    </modules>
+
+    <properties>
+        <java.version>25</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Spring Cloud 2025.1 (Oakwood) + Spring Cloud Alibaba 2025.1 are the GA lines for Boot 4.0 -->
+        <spring-cloud.version>2025.1.3</spring-cloud.version>
+        <spring-cloud-alibaba.version>2025.1.0.0</spring-cloud-alibaba.version>
+
+        <mybatis-plus.version>3.5.17</mybatis-plus.version>
+        <redisson.version>4.7.0</redisson.version>
+        <resilience4j.version>2.4.0</resilience4j.version>
+        <xxl-job.version>3.4.2</xxl-job.version>
+        <!-- Huawei OBS SDK, "bundle" flavour: third-party dependencies are shaded (no clash with Jackson 3 / OkHttp) -->
+        <obs.version>3.26.6</obs.version>
+        <!-- JDK 25 needs lombok >= 1.18.40; also overrides the older version managed by the SCA BOM -->
+        <lombok.version>1.18.48</lombok.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- ===== internal modules ===== -->
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-core</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-web</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-mybatis</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-redis</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-mq</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-job</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-common-obs</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-user-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-wallet-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-game-integration-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-lobby-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-payment-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-turnover-api</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.bingo789</groupId><artifactId>bingo-kyc-api</artifactId><version>${project.version}</version></dependency>
+
+            <!-- ===== BOMs (Boot's own management is inherited from the parent and wins over these) ===== -->
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
+                <version>${spring-cloud-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-bom</artifactId>
+                <version>${mybatis-plus.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.github.resilience4j</groupId>
+                <artifactId>resilience4j-bom</artifactId>
+                <version>${resilience4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- ===== third party ===== -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.xuxueli</groupId>
+                <artifactId>xxl-job-core</artifactId>
+                <version>${xxl-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.huaweicloud</groupId>
+                <artifactId>esdk-obs-java-bundle</artifactId>
+                <version>${obs.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <release>${java.version}</release>
+                        <parameters>true</parameters>
+                        <!-- JDK 23+ no longer discovers processors on the classpath implicitly -->
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                                <version>${lombok.version}</version>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <profiles>
+        <!-- Integration tests (*IT) need Docker for Testcontainers: mvn verify -Pit -->
+        <profile>
+            <id>it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

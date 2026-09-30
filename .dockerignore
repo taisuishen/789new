@@ -1,0 +1,8 @@
+# The build context is the repo root, but the image only needs the service jar (passed via --build-arg JAR)
+# and the OpenTelemetry agent. Everything else (sources, .idea, deploy/, .git, local secrets) stays out.
+*
+!**/target/*.jar
+!otel/opentelemetry-javaagent.jar
+**/target/*-sources.jar
+**/target/*-javadoc.jar
+**/target/*-tests.jar

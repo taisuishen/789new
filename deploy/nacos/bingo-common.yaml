@@ -1,0 +1,41 @@
+# Nacos: Data ID = bingo-common.yaml, Group = BINGO, format = YAML. Shared by every service
+# (spring.config.import: optional:nacos:bingo-common.yaml). ${VAR:default} placeholders are resolved by Spring
+# from each pod's environment (ConfigMap bingo-common-env / Secret bingo-common-secret in CCE, IDE env locally),
+# so the same content works in every environment. Never put secrets here in clear text.
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+  cloud:
+    openfeign:
+      client:
+        config:
+          # Every Feign client. No Feign retries anywhere: the provider retries with the same transaction id.
+          default:
+            connect-timeout: 500
+            read-timeout: 2000
+          # Calls INTO bingo-wallet. Must stay well below the providers' callback timeouts (the provider-facing
+          # request in bingo-game-integration waits on this call), so a slow wallet turns into a fast
+          # "system error, retry" answer instead of a provider-side timeout.
+          # Spring Cloud OpenFeign looks this block up by the @FeignClient contextId: WalletClient uses
+          # contextId "walletClient"; the service-name key covers clients declared without a contextId.
+          walletClient:
+            connect-timeout: 200
+            read-timeout: 1500
+          bingo-wallet:
+            connect-timeout: 200
+            read-timeout: 1500
+    loadbalancer:
+      cache:
+        # Default 35s. Short TTL so callers stop picking an instance soon after it de-registers from Nacos
+        # during a rolling update (works together with the preStop sleep in the k8s manifests).
+        ttl: 5s
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:http://127.0.0.1:18081}
+    access-token: ${XXL_JOB_TOKEN:}
+    # executor.appname defaults to spring.application.name (create one executor per service in the admin UI);
+    # executor.port comes from XXL_JOB_EXECUTOR_PORT / the service's own config (9101..9109).
+

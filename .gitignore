@@ -1,0 +1,22 @@
+target/
+*.class
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# local secrets / overrides — never commit
+*.env
+application-local*.yml
+deploy/k8s/secrets.yaml
+otel/*.jar

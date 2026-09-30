@@ -1,0 +1,131 @@
+server:
+  port: 8109
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-reconcile
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 500
+        max-connections-per-route: 250
+      client:
+        config:
+          # Keys are Feign contextIds (OpenFeign looks client config up by contextId).
+          providerQueryClient:
+            connect-timeout: 1000
+            read-timeout: 10000
+          lobbyClient:
+            connect-timeout: 500
+            read-timeout: 3000
+  datasource:
+    # Reports and back-office reads go to TaurusDB read replicas; the Kafka aggregation transaction is pinned to
+    # the primary (MasterRoute) because it reads its stored offsets FOR UPDATE.
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_reconcile?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=60000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: reconcile-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:16}
+      minimum-idle: 4
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    consumer:
+      # Offsets that matter live in kafka_offset (same transaction as the aggregates); Kafka's commits are a hint.
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 2000
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        # bigger fetches = bigger batches = fewer upserts on the (hot) aggregate rows
+        fetch.min.bytes: 65536
+        fetch.max.wait.ms: 500
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    # report queries (GGR rebuild, RTP window) scan more than OLTP statements
+    default-statement-timeout: 30
+    # never serve a locking read (SELECT ... FOR UPDATE) from MyBatis' session cache
+    local-cache-scope: statement
+  global-config:
+    banner: false
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  reconcile:
+    consumer-concurrency: 3
+    tolerance: 0
+    hourly-lag: 2h
+    # Regulatory reporting day for GGR and settlements (platform standard UTC+8; whole-hour offsets only).
+    report-zone: "${RECON_REPORT_ZONE:+08:00}"
+    # Provider code -> revenue share of GGR. Use bracket keys for codes with characters other than letters,
+    # digits and '-', e.g. "[PG_SOFT]": 0.12
+    # revenue-share:
+    #   "[PG_SOFT]": 0.12
+    # Transfer-wallet providers: their bets never reach our ledger, so the bet-level hourly comparison is skipped.
+    # TODO: transfer-wallet reconciliation (TRANSFER_IN/OUT vs the provider's transfer history).
+    # excluded-providers: SOME_TRANSFER_PROVIDER
+    rtp:
+      window-days: 7
+      min-rounds: 10000
+      min-bet: 100000
+      max-deviation: 3.0
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      port: 9109
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

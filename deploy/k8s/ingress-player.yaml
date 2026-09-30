@@ -1,0 +1,37 @@
+# Player traffic: player domain -> player ELB -> bingo-gateway. Nothing else is reachable from this ELB.
+#
+# CCE LoadBalancer Ingress (ingressClassName: cce, Kubernetes >= 1.23). The ELB is created beforehand
+# (dedicated / "performance" type, own EIP) and bound by ID; it is a DIFFERENT ELB instance from the callback one,
+# so the two never share listeners, bandwidth or capacity. Put Huawei WAF (bot / CC / rate protection) in front
+# of the player domain and also block /internal/* there as an extra layer - bingo-gateway rejects it anyway.
+# verify for your CCE version: annotation support differs per cluster version (see CCE "LoadBalancer Ingress
+# Annotations").
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bingo-player
+  namespace: bingo
+  labels:
+    app.kubernetes.io/part-of: bingo
+  annotations:
+    kubernetes.io/elb.class: performance
+    kubernetes.io/elb.id: "__PLAYER_ELB_ID__"
+    kubernetes.io/elb.port: "443"
+    kubernetes.io/elb.tls-certificate-ids: "__PLAYER_CERT_ID__"   # ELB certificate (no spec.tls needed)
+    kubernetes.io/elb.tls-ciphers-policy: tls-1-2
+    kubernetes.io/elb.http2-enable: "true"
+spec:
+  ingressClassName: cce
+  rules:
+    - host: "__PLAYER_HOST__"          # e.g. api.<player-domain>
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            property:                  # CCE-specific field
+              ingress.beta.kubernetes.io/url-match-mode: STARTS_WITH
+            backend:
+              service:
+                name: bingo-gateway
+                port:
+                  number: 8080

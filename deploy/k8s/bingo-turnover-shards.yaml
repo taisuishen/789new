@@ -1,0 +1,32 @@
+# bingo-turnover (wagering requirements, 稽核) on 16 shard databases, same 1024 logical shards as the wallet.
+# Loaded by service-template.yaml through the optional ConfigMap <service>-env. Apply BEFORE rendering the
+# template for bingo-turnover (env from a ConfigMap is read at pod start). TURNOVER_DB_HOST_NN is the instance of
+# database bingo_turnover_NN (deploy/sql/shard_schemas.sh turnover); it may be the instance of bingo_bet_record_NN.
+# turnover_setting lives on ds00.
+# Routes / migrating shards are changed at runtime in Nacos (bingo-turnover.yaml), not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bingo-turnover-env
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-turnover
+    app.kubernetes.io/part-of: bingo
+data:
+  SPRING_PROFILES_ACTIVE: "sharding"
+  TURNOVER_DB_HOST_00: "__TAURUSDB_TURNOVER_DS0_HOST__"
+  TURNOVER_DB_HOST_01: "__TAURUSDB_TURNOVER_DS1_HOST__"
+  TURNOVER_DB_HOST_02: "__TAURUSDB_TURNOVER_DS2_HOST__"
+  TURNOVER_DB_HOST_03: "__TAURUSDB_TURNOVER_DS3_HOST__"
+  TURNOVER_DB_HOST_04: "__TAURUSDB_TURNOVER_DS4_HOST__"
+  TURNOVER_DB_HOST_05: "__TAURUSDB_TURNOVER_DS5_HOST__"
+  TURNOVER_DB_HOST_06: "__TAURUSDB_TURNOVER_DS6_HOST__"
+  TURNOVER_DB_HOST_07: "__TAURUSDB_TURNOVER_DS7_HOST__"
+  TURNOVER_DB_HOST_08: "__TAURUSDB_TURNOVER_DS8_HOST__"
+  TURNOVER_DB_HOST_09: "__TAURUSDB_TURNOVER_DS9_HOST__"
+  TURNOVER_DB_HOST_10: "__TAURUSDB_TURNOVER_DS10_HOST__"
+  TURNOVER_DB_HOST_11: "__TAURUSDB_TURNOVER_DS11_HOST__"
+  TURNOVER_DB_HOST_12: "__TAURUSDB_TURNOVER_DS12_HOST__"
+  TURNOVER_DB_HOST_13: "__TAURUSDB_TURNOVER_DS13_HOST__"
+  TURNOVER_DB_HOST_14: "__TAURUSDB_TURNOVER_DS14_HOST__"
+  TURNOVER_DB_HOST_15: "__TAURUSDB_TURNOVER_DS15_HOST__"

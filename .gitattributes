@@ -1,0 +1,4 @@
+* text=auto
+# shell scripts run on Linux (Jenkins agent, bastion): keep LF even on a Windows checkout
+*.sh text eol=lf
+Jenkinsfile text eol=lf

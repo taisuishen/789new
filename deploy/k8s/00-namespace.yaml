@@ -1,0 +1,46 @@
+# Namespace for all bingo-* workloads (CCE, Kubernetes >= 1.28 - required for the
+# apps.kubernetes.io/pod-index label that feeds WORKER_ID).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bingo
+  labels:
+    app.kubernetes.io/part-of: bingo
+    # The bingo pods satisfy "restricted"; enforce "baseline" so an infra pod (e.g. xxl-job-admin, which runs
+    # as root) can still be deployed here, and warn on anything below "restricted".
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+# Money-moving workloads (bingo-wallet, bingo-game-integration) must never be evicted/preempted to make room
+# for other pods.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: bingo-critical
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "bingo-wallet and bingo-game-integration (in-flight bets and payouts)"
+---
+# Player-facing synchronous services (bingo-gateway, bingo-user, bingo-lobby, bingo-payment).
+# Below bingo-critical: when the general node pool is full during a surge, the scheduler preempts these before
+# it would ever leave a wallet pod Pending (the gateway waiting room absorbs the lost capacity).
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: bingo-online
+value: 50000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "player-facing synchronous services"
+---
+# Asynchronous consumers (bet-record, reconcile, turnover, risk, promotion). They only build lag when starved, so
+# they never preempt anything themselves and are the first to be preempted.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: bingo-async
+value: 10000
+globalDefault: false
+preemptionPolicy: Never
+description: "Kafka consumers / derived data; may lag during a surge"

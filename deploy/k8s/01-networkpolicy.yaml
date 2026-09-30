@@ -1,0 +1,98 @@
+# Network isolation for namespace bingo (ingress direction; egress to TaurusDB/DCS/DMS/Nacos is not restricted).
+#
+# /internal/** endpoints are service-to-service only. NetworkPolicy is L4 and cannot filter paths, so the rule is:
+#   - every pod accepts traffic only from pods in this namespace (policy 1),
+#   - the only exceptions are the edge pods, reachable from their own ELB (policies 3 and 4), and the ELB
+#     ingresses only route /  -> bingo-gateway (which itself rejects /internal/**), /callback/ -> bingo-game-integration
+#     and /notify/ -> bingo-payment. No ingress ever routes /internal/**.
+#
+# verify for your CCE version / network model: NetworkPolicy enforcement depends on it (container tunnel
+# network, VPC network on newer versions, CCE Turbo with network policies enabled). Kubelet probes from the node
+# are not affected by these rules on CCE.
+---
+# 1. Baseline: in-namespace traffic only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: same-namespace-only
+  namespace: bingo
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+---
+# 2. Prometheus scraping of /actuator/prometheus (application port; bingo-gateway serves actuator on its
+#    separate management port 18080).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: bingo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: bingo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring   # verify: namespace of your Prometheus / CCE monitoring add-on
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8101
+          endPort: 8111
+        - protocol: TCP
+          port: 18080          # bingo-gateway management port (management.server.port)
+---
+# 3. Player ELB -> bingo-gateway only.
+# With a dedicated ELB in pass-through mode (CCE Turbo + ClusterIP backends) packets arrive from the ELB's
+# backend subnet; with NodePort backends (CCE standard) they arrive from node IPs - adjust the CIDR accordingly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-player-elb-to-gateway
+  namespace: bingo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bingo-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __PLAYER_ELB_SUBNET_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# 4. Callback ELB -> bingo-game-integration (/callback/**), bingo-payment (/notify/**) and bingo-kyc (RunPod
+#    webhooks /callback/runpod/**, on the ELB's separate 8443 listener).
+# A different ELB (ideally in its own subnet) from the player ELB: player traffic can never reach these pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-callback-elb
+  namespace: bingo
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [bingo-game-integration, bingo-payment, bingo-kyc]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __CALLBACK_ELB_SUBNET_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8103
+        - protocol: TCP
+          port: 8106
+        - protocol: TCP
+          port: 8111

@@ -1,0 +1,121 @@
+server:
+  port: 8107
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-risk
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 500
+        max-connections-per-route: 250
+      client:
+        # Per-client keys are the @FeignClient contextId (paymentClient, walletClient), not the service name.
+        config:
+          default:
+            connect-timeout: 500
+            read-timeout: 3000
+          paymentClient:
+            # an approval also submits the payout to the channel before payment answers
+            connect-timeout: 500
+            read-timeout: 10000
+          walletClient:
+            connect-timeout: 500
+            read-timeout: 3000
+          turnoverClient:
+            connect-timeout: 500
+            read-timeout: 2000
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_risk?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: risk-hikari
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: 4
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 5
+  global-config:
+    banner: false
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      appname: ${spring.application.name}
+      port: 9107
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  risk:
+    aml:
+      # Reporting thresholds are jurisdiction-specific (licence conditions / AMLC rules); set them per environment
+      # in Nacos. Single-currency assumption: the values are in the platform currency.
+      large-withdrawal-threshold: 500000
+      large-deposit-threshold: 500000
+    turnover:
+      # outstanding wagering requirement (read from bingo-turnover): REVIEW by default, REJECT when true
+      reject-when-outstanding: false
+    velocity:
+      max-withdrawals-per-24h: 3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

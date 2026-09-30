@@ -1,0 +1,110 @@
+server:
+  port: 8104
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-lobby
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    openfeign:
+      # pooled Apache HttpClient 5 (feign-hc5); sized for 1M online, see docs/capacity-1m.md
+      httpclient:
+        hc5:
+          enabled: true
+        max-connections: 1000
+        max-connections-per-route: 500
+      client:
+        config:
+          # Keys are Feign contextIds: OpenFeign looks client config up by contextId (which defaults to the name).
+          default:
+            connect-timeout: 500
+            read-timeout: 2000
+          walletClient:
+            # availability probe before a launch: fail fast, the launch is rejected with SERVICE_UNAVAILABLE
+            connect-timeout: 200
+            read-timeout: 300
+          gameLaunchClient:
+            # game-integration may call the provider's launch API
+            read-timeout: 5000
+          providerQueryClient:
+            # catalogue sync job only
+            read-timeout: 30000
+  datasource:
+    # Reads may be served by TaurusDB read replicas (proxy read/write splitting).
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_lobby?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=3000&cachePrepStmts=true&useServerPrepStmts=false
+    username: ${DB_USER:bingo}
+    password: ${DB_PASSWORD:bingo}
+    hikari:
+      pool-name: lobby-hikari
+      # the catalogue is served from memory; the pool only feeds snapshot loads, launches and back-office
+      maximum-pool-size: ${DB_POOL_SIZE:16}
+      minimum-idle: 4
+      connection-timeout: 1000
+      validation-timeout: 500
+      keepalive-time: 30000
+      max-lifetime: 600000
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 3
+  global-config:
+    banner: false
+
+bingo:
+  mybatis:
+    worker-id: ${WORKER_ID:-1}
+  lobby:
+    cache-ttl: 30s
+    cache-max-stale: 10m
+    max-page-size: 200
+    default-lobby-url: ${LOBBY_DEFAULT_URL:http://localhost:3000/}
+    allowed-lobby-hosts: ${LOBBY_ALLOWED_HOSTS:localhost}
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:}
+    access-token: ${XXL_JOB_TOKEN:}
+    executor:
+      port: 9104
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

@@ -1,0 +1,177 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: bingo-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  config:
+    import:
+      - optional:nacos:bingo-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+      config:
+        enabled: ${NACOS_ENABLED:true}
+        namespace: ${NACOS_NAMESPACE:}
+        group: BINGO
+        file-extension: yaml
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              # never expose registered services automatically; only the routes below are reachable
+              enabled: false
+          httpclient:
+            connect-timeout: 1000
+            response-timeout: 10s
+          # TODO: globalcors for the player web origins once the domains are fixed.
+          default-filters:
+            # Runs after AuthGlobalFilter (order 1 vs -100), so the key can use the verified X-User-Id.
+            # TODO: rejected requests get an empty 429 body; wrap the filter factory if clients need a Result body.
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userOrIpKeyResolver}"
+                redis-rate-limiter.replenishRate: ${GATEWAY_RATE_REPLENISH:20}
+                redis-rate-limiter.burstCapacity: ${GATEWAY_RATE_BURST:40}
+                redis-rate-limiter.requestedTokens: 1
+          routes:
+            # user-service keeps the Authorization header: logout and /me need the session token itself
+            - id: bingo-user
+              uri: lb://bingo-user
+              predicates:
+                - Path=/api/user/**
+            # wallet exposes GET /api/wallet/balance (implemented by the wallet team)
+            - id: bingo-wallet
+              uri: lb://bingo-wallet
+              predicates:
+                - Path=/api/wallet/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-lobby
+              uri: lb://bingo-lobby
+              predicates:
+                - Path=/api/lobby/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-bet-record
+              uri: lb://bingo-bet-record
+              predicates:
+                - Path=/api/bet-records/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-payment
+              uri: lb://bingo-payment
+              predicates:
+                - Path=/api/payment/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-promotion
+              uri: lb://bingo-promotion
+              predicates:
+                - Path=/api/promotion/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-turnover
+              uri: lb://bingo-turnover
+              predicates:
+                - Path=/api/turnover/**
+              filters:
+                - RemoveRequestHeader=Authorization
+            - id: bingo-kyc
+              uri: lb://bingo-kyc
+              predicates:
+                - Path=/api/kyc/**
+              filters:
+                - RemoveRequestHeader=Authorization
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 200ms
+
+bingo:
+  gateway:
+    geo:
+      # Licence requirement. Only disable for local development.
+      enabled: ${GEO_FENCE_ENABLED:true}
+      # static value added by Huawei WAF header forwarding after its geolocation rule (WAF cannot forward the
+      # client's country). A client-supplied value gains nothing: WAF has already blocked other countries, and the
+      # ELB accepts WAF traffic only. See GeoFenceGlobalFilter.
+      country-header: X-Country-Code
+      allowed-countries: ${GEO_ALLOWED_COUNTRIES:PH}
+      bypass-paths:
+        - /actuator/health
+        - /actuator/health/**
+    client-ip:
+      # 0 = first X-Forwarded-For entry (edge overwrites the header); N = N-th entry from the right
+      trusted-hops: ${CLIENT_IP_TRUSTED_HOPS:0}
+    auth:
+      # "PATTERN" (any method) or "METHOD PATTERN". GET /api/queue/status (waiting room) is always public.
+      public-paths:
+        - OPTIONS /**
+        - POST /api/user/register
+        - POST /api/user/login
+        - GET /api/lobby/categories
+        - GET /api/lobby/games
+        - /actuator/health/**
+    # Waiting room: at capacity, NEW entries (protected paths) get 429 + a queue ticket and poll
+    # GET /api/queue/status?ticket=...; players already inside are never gated. Fails open on Redis errors.
+    admission:
+      enabled: ${ADMISSION_ENABLED:true}
+      # distinct players with authenticated traffic within online-window (Redis HyperLogLog bingo:online:<minute>).
+      # max-online and admit-rate-per-second are applied at runtime on a Nacos change; the rest needs a restart.
+      max-online: ${ADMISSION_MAX_ONLINE:1000000}
+      online-window: 5m
+      # Entry points only. Never add in-game, wallet or withdrawal paths.
+      protected-paths:
+        - /api/user/login
+        - /api/lobby/games/*/launch
+      # players let in from the queue per second, cluster-wide (also bounded by the free capacity)
+      admit-rate-per-second: ${ADMISSION_RATE:2000}
+      # an admission pass is refreshed on every admitted login / game launch
+      pass-ttl: 30m
+      ticket-ttl: 1h
+      # HMAC key for tickets and passes; identical on every gateway pod, >= 32 chars. Startup fails without it
+      # while enabled. Inject from the k8s Secret, never from Nacos in clear text.
+      pass-secret: ${ADMISSION_PASS_SECRET:}
+    # Degrade switches, changeable at runtime from Nacos (bingo-gateway.yaml): matching requests get 503
+    # "temporarily disabled". Typical under load: /api/bet-records/**, /api/promotion/**, leaderboards.
+    # Never: /api/wallet/**, withdrawals (/api/payment/**), game launch.
+    degrade:
+      disabled-paths: []
+    # Internal RPC and provider callbacks are never served by this gateway (404).
+    blocked-paths:
+      - /internal/**
+      - /callback/**
+
+management:
+  server:
+    # Actuator is not routed through the gateway filters, so keep it off the public port.
+    port: ${MANAGEMENT_PORT:18080}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-}]"

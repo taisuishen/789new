@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.bingo789</groupId>
+        <artifactId>bingo-bet-record</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>bingo-bet-record-service</artifactId>
+    <description>Bet records: game rounds projected from the wallet ledger, provider bet-history pulls. Large time-partitioned tables.</description>
+
+    <dependencies>
+        <dependency>
+            <!-- TxnType only; bet-record never calls the wallet -->
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-wallet-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-game-integration-api</artifactId>
+        </dependency>
+        <dependency>
+            <!-- player lines of pulled provider records -->
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-user-api</artifactId>
+        </dependency>
+        <dependency>
+            <!-- game catalogue (game type / name) copied onto rounds and provider records -->
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-lobby-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-common-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-common-mybatis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-common-mq</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bingo789</groupId>
+            <artifactId>bingo-common-job</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+        <dependency>
+            <!-- pooled Apache HttpClient 5 for Feign (default HttpURLConnection does not pool well at high QPS) -->
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-hc5</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

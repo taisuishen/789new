@@ -1,0 +1,109 @@
+# Production bet-record: SPRING_PROFILES_ACTIVE=sharding
+# Same user -> logical shard hash as the wallet (1024 logical shards) in 16 databases bingo_bet_record_00..15, which
+# may share TaurusDB instances (with each other and with bingo_turnover_NN). At 1M online the ledger stream is
+# ~250k events/s; one instance per database keeps each primary around 16k transactions/s.
+# game_round / round_txn / provider_bet_record are sharded by user; bet_pull_checkpoint lives on ds00 (global).
+# routes / migrating-shards are hot-reloaded from Nacos (bingo-bet-record.yaml). Databases move to other instances
+# exactly as described in the wallet's application-sharding.yml (no Flink CDC here). During the DRS copy pause
+# betRecordPartitionJob; during the cutover the consumer retries writes of migrating shards (partition blocked for
+# seconds) and betRecordProviderPullJob fails its run without advancing the checkpoint.
+
+bet-record-jdbc-params: useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+
+bingo:
+  shard:
+    enabled: true
+    logical-shards: 1024
+    global-datasource: ds00
+    pool:
+      max-pool-size: ${DB_POOL_SIZE:8}
+      min-idle: 2
+    migrating-shards: []
+    datasources:
+      ds00:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_00}:${DB_PORT:3306}/bingo_bet_record_00?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds01:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_01}:${DB_PORT:3306}/bingo_bet_record_01?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds02:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_02}:${DB_PORT:3306}/bingo_bet_record_02?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds03:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_03}:${DB_PORT:3306}/bingo_bet_record_03?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds04:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_04}:${DB_PORT:3306}/bingo_bet_record_04?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds05:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_05}:${DB_PORT:3306}/bingo_bet_record_05?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds06:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_06}:${DB_PORT:3306}/bingo_bet_record_06?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds07:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_07}:${DB_PORT:3306}/bingo_bet_record_07?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds08:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_08}:${DB_PORT:3306}/bingo_bet_record_08?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds09:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_09}:${DB_PORT:3306}/bingo_bet_record_09?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds10:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_10}:${DB_PORT:3306}/bingo_bet_record_10?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds11:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_11}:${DB_PORT:3306}/bingo_bet_record_11?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds12:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_12}:${DB_PORT:3306}/bingo_bet_record_12?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds13:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_13}:${DB_PORT:3306}/bingo_bet_record_13?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds14:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_14}:${DB_PORT:3306}/bingo_bet_record_14?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds15:
+        url: jdbc:mysql://${BET_RECORD_DB_HOST_15}:${DB_PORT:3306}/bingo_bet_record_15?${bet-record-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+    routes:
+      - { shards: "0-63", datasource: ds00 }
+      - { shards: "64-127", datasource: ds01 }
+      - { shards: "128-191", datasource: ds02 }
+      - { shards: "192-255", datasource: ds03 }
+      - { shards: "256-319", datasource: ds04 }
+      - { shards: "320-383", datasource: ds05 }
+      - { shards: "384-447", datasource: ds06 }
+      - { shards: "448-511", datasource: ds07 }
+      - { shards: "512-575", datasource: ds08 }
+      - { shards: "576-639", datasource: ds09 }
+      - { shards: "640-703", datasource: ds10 }
+      - { shards: "704-767", datasource: ds11 }
+      - { shards: "768-831", datasource: ds12 }
+      - { shards: "832-895", datasource: ds13 }
+      - { shards: "896-959", datasource: ds14 }
+      - { shards: "960-1023", datasource: ds15 }
+
+management:
+  health:
+    db:
+      # Boot's DB health check has no shard context; per-shard pool health is exported as hikaricp_* metrics
+      enabled: false

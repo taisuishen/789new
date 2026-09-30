@@ -1,0 +1,264 @@
+# Generic manifest for the remaining services. Replace the placeholders and apply once per service
+# (1M sizing, docs/capacity-1m.md):
+#
+#   __SERVICE__       __PORT__ __XXL_PORT__ __NODE_POOL__ __PRIORITY_CLASS__ __DB_POOL_SIZE__  scaling
+#   bingo-user          8101     9101        general       bingo-online        16    HPA 6..30  + CronHPA
+#   bingo-lobby         8104     9104        general       bingo-online         8    HPA 6..30  + CronHPA
+#   bingo-bet-record    8105     9105        consumer      bingo-async          8    KEDA 12..64 (lag + CPU)
+#   bingo-payment       8106     9106        general       bingo-online        16    HPA 3..15  + CronHPA
+#   bingo-risk          8107     9107        general       bingo-async          8    HPA 2..8
+#   bingo-promotion     8108     9108        consumer      bingo-async          8    KEDA 8..32
+#   bingo-reconcile     8109     9109        consumer      bingo-async          8    KEDA 8..32
+#   bingo-turnover      8110     9110        consumer      bingo-async          8    KEDA 8..32 (sharded)
+#   bingo-kyc           8111     9111        general       bingo-online         8    HPA 2..10
+#
+#   bingo-payment is also the backend of /notify/** in ingress-callback.yaml. bingo-kyc receives the RunPod
+#   webhooks (ingress-callback.yaml, listener 8443).
+#   HPAs: autoscaling-hpa.yaml; KEDA ScaledObjects: autoscaling-keda.yaml; CronHPA: autoscaling-cronhpa.yaml.
+#   A workload has EITHER an HPA OR a KEDA ScaledObject, never both.
+#
+#   bash:        sed -e 's/__SERVICE__/bingo-user/g' -e 's/__XXL_PORT__/9101/g' -e 's/__PORT__/8101/g' \
+#                    -e 's/__NODE_POOL__/general/g' -e 's/__PRIORITY_CLASS__/bingo-online/g' \
+#                    -e 's/__DB_POOL_SIZE__/16/g' \
+#                    -e 's#__REGISTRY__#swr.<region>.myhuaweicloud.com/<org>#g' -e 's/__TAG__/0.1.0-SNAPSHOT/g' \
+#                    -e 's/__TAURUSDB_SHARED_HOST__/<host>/g' service-template.yaml | kubectl apply -f -
+#   PowerShell:  see deploy/README.md
+#
+# Needs Secret <service>-db (DB_USER / DB_PASSWORD).
+# Every service that writes rows runs as a StatefulSet so WORKER_ID = pod ordinal is unique per instance.
+#
+# Optional ConfigMap <service>-env is loaded when it exists. bingo-bet-record and bingo-turnover use it
+# (bingo-bet-record-shards.yaml, bingo-turnover-shards.yaml)
+# to run sharded: SPRING_PROFILES_ACTIVE=sharding + 16 own TaurusDB instances; DB_POOL_SIZE is then the pool size
+# PER shard database (bet-record 64 pods x 8 = 512, turnover 32 x 8 = 256 connections per primary at the KEDA
+# ceiling; the two may share the 16 instances: different schemas, same shard numbers).
+#
+# Shared TaurusDB connection budget (services on __TAURUSDB_SHARED_HOST__), at maxReplicas:
+#   user 30x16 + lobby 30x8 + payment 15x16 + risk 8x8 + promotion 32x8 + reconcile 32x8 + game-integration 160x4
+#   = 480 + 240 + 240 + 64 + 256 + 256 + 640 = 2,176 connections. Keep below ~70% of the instance's
+#   max_connections. bet-record is NOT on the shared instance at 1M (its ~125k rounds/s go to its own shards).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: __SERVICE__-headless
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: __SERVICE__
+    app.kubernetes.io/part-of: bingo
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: __SERVICE__
+  ports:
+    - name: http
+      port: __PORT__
+      targetPort: http
+    - name: xxl
+      port: __XXL_PORT__
+      targetPort: xxl
+---
+# ClusterIP works as an Ingress backend with a dedicated ELB on CCE Turbo; use NodePort on CCE standard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: __SERVICE__
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: __SERVICE__
+    app.kubernetes.io/part-of: bingo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: __SERVICE__
+  ports:
+    - name: http
+      port: __PORT__
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: __SERVICE__
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: __SERVICE__
+    app.kubernetes.io/part-of: bingo
+spec:
+  serviceName: __SERVICE__-headless
+  # replicas is owned by the HPA / KEDA (their minReplicas = off-peak baseline). Deliberately not set here:
+  # re-applying a manifest that contains spec.replicas would reset a scaled-out workload during a peak.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 20%            # verify: needs the MaxUnavailableStatefulSet feature gate (see bingo-wallet.yaml)
+  minReadySeconds: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: __SERVICE__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: __SERVICE__
+        app.kubernetes.io/part-of: bingo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "__PORT__"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      priorityClassName: __PRIORITY_CLASS__
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Own node pool (general | consumer). Consumers never spill onto the general pool, where they would compete
+      # with player-facing pods.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: bingo.io/pool
+                    operator: In
+                    values: [__NODE_POOL__]
+      # The consumer pool is tainted bingo.io/pool=consumer:NoSchedule. The toleration is harmless for services
+      # pinned to the general pool by the affinity above.
+      tolerations:
+        - key: bingo.io/pool
+          operator: Equal
+          value: consumer
+          effect: NoSchedule
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: __SERVICE__
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: __SERVICE__
+      containers:
+        - name: app
+          image: __REGISTRY__/__SERVICE__:__TAG__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: __PORT__
+            - name: xxl
+              containerPort: __XXL_PORT__
+          envFrom:
+            - configMapRef:
+                name: bingo-common-env
+            - configMapRef:                  # service-specific settings, e.g. bingo-bet-record-env (shard hosts)
+                name: __SERVICE__-env
+                optional: true
+            - secretRef:
+                name: bingo-common-secret
+            - secretRef:                     # service-specific secrets as env, e.g. bingo-kyc-secret (BINGO_RUNPOD_API_KEY)
+                name: __SERVICE__-secret     # on a cluster without the DEW add-on: SecretRefs falls back to these
+                optional: true
+          env:
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.labels['apps.kubernetes.io/pod-index']"
+            - name: DB_HOST
+              value: "__TAURUSDB_SHARED_HOST__"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: __SERVICE__-db
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: __SERVICE__-db
+                  key: DB_PASSWORD
+            # Hikari maximum-pool-size (application.yml: ${DB_POOL_SIZE:<default>}); see the budget in the header.
+            - name: DB_POOL_SIZE
+              value: "__DB_POOL_SIZE__"
+            - name: XXL_JOB_EXECUTOR_PORT
+              value: "__XXL_PORT__"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_SERVICE_NAME
+              value: __SERVICE__
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=bingo,k8s.pod.name=$(POD_NAME)"
+          # 4 vCPU / 8 GiB, requests == limits: the HPA / KEDA CPU utilisation is measured against requests, so
+          # equal limits keep the target meaningful (no bursting above 100%) and give Guaranteed QoS.
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: applogs
+              mountPath: /data/applogs
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: applogs
+          emptyDir:
+            sizeLimit: 1Gi
+---
+# Percentage: node drains finish in reasonable time at tens of pods; rounds up, so always at least 1.
+# For Kafka consumers every eviction is a consumer-group rebalance - see docs/capacity-1m.md (static membership).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: __SERVICE__
+  namespace: bingo
+spec:
+  maxUnavailable: 20%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: __SERVICE__

@@ -1,0 +1,107 @@
+# Production bingo-turnover: SPRING_PROFILES_ACTIVE=sharding
+# Same user -> logical shard hash as the wallet (1024 logical shards) in 16 databases bingo_turnover_00..15
+# (TURNOVER_DB_HOST_00..15; they may share TaurusDB instances with bingo_bet_record_NN: same player, same number).
+# turnover_bucket / turnover_flow are sharded by user; turnover_setting lives on ds00 (global).
+# routes / migrating-shards are hot-reloaded from Nacos (bingo-turnover.yaml). Databases move to other instances
+# exactly as described in the wallet's application-sharding.yml (no Flink CDC here); pause turnoverPartitionJob
+# during the DRS copy.
+
+turnover-jdbc-params: useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=5000&cachePrepStmts=true&useServerPrepStmts=false
+
+bingo:
+  shard:
+    enabled: true
+    logical-shards: 1024
+    global-datasource: ds00
+    pool:
+      max-pool-size: ${DB_POOL_SIZE:8}
+      min-idle: 2
+    migrating-shards: []
+    datasources:
+      ds00:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_00}:${DB_PORT:3306}/bingo_turnover_00?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds01:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_01}:${DB_PORT:3306}/bingo_turnover_01?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds02:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_02}:${DB_PORT:3306}/bingo_turnover_02?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds03:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_03}:${DB_PORT:3306}/bingo_turnover_03?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds04:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_04}:${DB_PORT:3306}/bingo_turnover_04?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds05:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_05}:${DB_PORT:3306}/bingo_turnover_05?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds06:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_06}:${DB_PORT:3306}/bingo_turnover_06?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds07:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_07}:${DB_PORT:3306}/bingo_turnover_07?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds08:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_08}:${DB_PORT:3306}/bingo_turnover_08?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds09:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_09}:${DB_PORT:3306}/bingo_turnover_09?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds10:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_10}:${DB_PORT:3306}/bingo_turnover_10?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds11:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_11}:${DB_PORT:3306}/bingo_turnover_11?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds12:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_12}:${DB_PORT:3306}/bingo_turnover_12?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds13:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_13}:${DB_PORT:3306}/bingo_turnover_13?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds14:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_14}:${DB_PORT:3306}/bingo_turnover_14?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+      ds15:
+        url: jdbc:mysql://${TURNOVER_DB_HOST_15}:${DB_PORT:3306}/bingo_turnover_15?${turnover-jdbc-params}
+        username: ${DB_USER}
+        password: ${DB_PASSWORD}
+    routes:
+      - { shards: "0-63", datasource: ds00 }
+      - { shards: "64-127", datasource: ds01 }
+      - { shards: "128-191", datasource: ds02 }
+      - { shards: "192-255", datasource: ds03 }
+      - { shards: "256-319", datasource: ds04 }
+      - { shards: "320-383", datasource: ds05 }
+      - { shards: "384-447", datasource: ds06 }
+      - { shards: "448-511", datasource: ds07 }
+      - { shards: "512-575", datasource: ds08 }
+      - { shards: "576-639", datasource: ds09 }
+      - { shards: "640-703", datasource: ds10 }
+      - { shards: "704-767", datasource: ds11 }
+      - { shards: "768-831", datasource: ds12 }
+      - { shards: "832-895", datasource: ds13 }
+      - { shards: "896-959", datasource: ds14 }
+      - { shards: "960-1023", datasource: ds15 }
+
+management:
+  health:
+    db:
+      # Boot's DB health check has no shard context; per-shard pool health is exported as hikaricp_* metrics
+      enabled: false

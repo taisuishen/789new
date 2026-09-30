@@ -1,0 +1,121 @@
+# TEST ENVIRONMENT ONLY: single-node Nacos (standalone mode, embedded storage on an EVS disk) in namespace bingo.
+# Production uses CSE (Nacos engine) or a 3-node cluster (docs/go-live.md).
+#
+# - NACOS_ADDR in 02-common-config.yaml: "nacos:8848" (clients also use gRPC on 9848 = 8848 + 1000).
+# - Console: kubectl -n bingo port-forward svc/nacos 18080:8080  ->  http://127.0.0.1:18080
+#   The first visit sets the "nacos" admin password; then create namespace, user bingo-app (read on the namespace)
+#   and import deploy/nacos/*.yaml (Group BINGO).
+# - Secret nacos-secret: NACOS_AUTH_TOKEN (Base64 of >= 32 random bytes), NACOS_AUTH_IDENTITY_KEY,
+#   NACOS_AUTH_IDENTITY_VALUE.
+# - Image: mirror nacos/nacos-server:v3.2.4 into SWR. Runs as root, which the namespace's "baseline" level allows.
+# Replace __REGISTRY__ before applying.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nacos
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: nacos
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nacos
+  ports:
+    - name: http
+      port: 8848
+      targetPort: http
+    - name: grpc
+      port: 9848
+      targetPort: grpc
+    - name: console
+      port: 8080
+      targetPort: console
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nacos
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: nacos
+spec:
+  serviceName: nacos
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nacos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nacos
+    spec:
+      nodeSelector:
+        bingo.io/pool: general
+      containers:
+        - name: app
+          image: __REGISTRY__/nacos-server:v3.2.4
+          ports:
+            - name: http
+              containerPort: 8848
+            - name: grpc
+              containerPort: 9848
+            - name: console
+              containerPort: 8080
+          env:
+            - name: TZ
+              value: Asia/Manila
+            - name: MODE
+              value: standalone
+            - name: PREFER_HOST_MODE
+              value: hostname
+            - name: NACOS_AUTH_ENABLE
+              value: "true"
+            - name: NACOS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: nacos-secret, key: NACOS_AUTH_TOKEN }
+            - name: NACOS_AUTH_IDENTITY_KEY
+              valueFrom:
+                secretKeyRef: { name: nacos-secret, key: NACOS_AUTH_IDENTITY_KEY }
+            - name: NACOS_AUTH_IDENTITY_VALUE
+              valueFrom:
+                secretKeyRef: { name: nacos-secret, key: NACOS_AUTH_IDENTITY_VALUE }
+            - name: JVM_XMS
+              value: 512m
+            - name: JVM_XMX
+              value: 512m
+            - name: JVM_XMN
+              value: 256m
+          volumeMounts:
+            - name: data
+              mountPath: /home/nacos/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /nacos/v3/admin/core/state/readiness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+          everest.io/disk-volume-type: SAS   # EVS high I/O
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: csi-disk
+        resources:
+          requests:
+            storage: 10Gi
