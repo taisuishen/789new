@@ -10,9 +10,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ObsStorageTest {
 
     private static final ObsProperties PRIVATE = new ObsProperties(true, "https://obs.ap-southeast-3.myhuaweicloud.com",
-            "bingo-kyc", null, null, null, Duration.ofMinutes(15), DataSize.ofMegabytes(10), "/mnt/csms");
+            "bingo-kyc", null, null, null, Duration.ofMinutes(15), DataSize.ofMegabytes(10), "/mnt/csms",
+            null, null, null);
     private static final ObsProperties PUBLIC = new ObsProperties(true, "obs.ap-southeast-3.myhuaweicloud.com",
-            "bingo-img", null, null, "https://img.789bingo.com", Duration.ofMinutes(15), DataSize.ofMegabytes(10), "/mnt/csms");
+            "bingo-img", null, null, "https://img.789bingo.com", Duration.ofMinutes(15), DataSize.ofMegabytes(10), "/mnt/csms",
+            null, null, null);
 
     @Test
     void detectsFormatsFromMagicBytesOnly() {
@@ -24,7 +26,7 @@ class ObsStorageTest {
 
     @Test
     void mapsOurUrlsBackToKeysAndRejectsForeignOnes() {
-        ObsStorage storage = new ObsStorage(null, PRIVATE);
+        ObsStorage storage = new HuaweiObsStorage(null, PRIVATE);
         String key = "kyc/42/20261001/abc.jpg";
         assertThat(storage.keyOf("https://bingo-kyc.obs.ap-southeast-3.myhuaweicloud.com/" + key
                 + "?AccessKeyId=x&Expires=1&Signature=y")).isEqualTo(key);
@@ -32,7 +34,7 @@ class ObsStorageTest {
         assertThat(storage.keyOf("https://evil.example.com/" + key)).isNull();
         assertThat(storage.keyOf("kyc/42/../43/x.jpg")).isNull();
 
-        ObsStorage publicStorage = new ObsStorage(null, PUBLIC);
+        ObsStorage publicStorage = new HuaweiObsStorage(null, PUBLIC);
         assertThat(publicStorage.keyOf("https://img.789bingo.com/" + key)).isEqualTo(key);
     }
 

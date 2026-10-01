@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bingo-web",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["bingo-web/dev_server.py"],
+      "port": 5173
+    }
+  ]
+}

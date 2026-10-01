@@ -104,6 +104,10 @@ bingo:
     signed-url-ttl: 15m
     max-image-size: 10MB
     secrets-path: ${BINGO_SECRETS_PATH:/mnt/csms}
+    # LOCAL DEVELOPMENT ONLY: files on disk instead of OBS, served through deploy/local/tunnel.sh (never set on CCE)
+    local-dir: ${OBS_LOCAL_DIR:}
+    local-base-url: ${OBS_LOCAL_BASE_URL:}
+    local-signing-key: ${OBS_LOCAL_SIGNING_KEY:}
   # RunPod / facecmp settings are in the config table (deploy/sql/11_kyc.sql), re-read every config-refresh
   kyc:
     config-refresh: 30s

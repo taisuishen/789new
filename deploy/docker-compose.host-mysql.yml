@@ -1,0 +1,15 @@
+# Local override: use the MySQL already running on the host (e.g. Homebrew on 127.0.0.1:3306) instead of the
+# compose "mysql" service. Start everything except mysql:
+#
+#   docker compose --env-file local.env -f docker-compose.yml -f docker-compose.host-mysql.yml up -d redis nacos kafka kafka-init xxl-job-admin
+#
+# The host MySQL needs the bingo account and schemas: sql/99_local_dev_account.sql as root, then sql/00..11 + 90.
+services:
+  xxl-job-admin:
+    depends_on: !reset {}
+    environment:
+      PARAMS: >-
+        --spring.datasource.url=jdbc:mysql://host.docker.internal:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true
+        --spring.datasource.username=${DB_USER:-bingo}
+        --spring.datasource.password=${DB_PASSWORD:-bingo}
+        --xxl.job.accessToken=${XXL_JOB_TOKEN:-bingo-local-dev-xxl-token}

@@ -20,6 +20,10 @@ import java.time.Duration;
  * @param signedUrlTtl  lifetime of signed GET URLs handed to clients and workers
  * @param maxImageSize  upper bound of an uploaded image
  * @param secretsPath   where the DEW/CSMS add-on mounts secrets
+ * @param localDir      LOCAL DEVELOPMENT ONLY: store objects as files in this directory instead of OBS
+ *                      ({@link LocalDiskStorage}); endpoint, bucket and keys are then not used
+ * @param localBaseUrl  public base URL the local files are served under; empty = read {@code <local-dir>/.base-url}
+ * @param localSigningKey HMAC key of the local URLs (>= 32 characters), shared with the server of the files
  */
 @ConfigurationProperties("bingo.obs")
 public record ObsProperties(
@@ -31,7 +35,14 @@ public record ObsProperties(
         String publicBaseUrl,
         @DefaultValue("15m") Duration signedUrlTtl,
         @DefaultValue("10MB") DataSize maxImageSize,
-        @DefaultValue("/mnt/csms") String secretsPath) {
+        @DefaultValue("/mnt/csms") String secretsPath,
+        String localDir,
+        String localBaseUrl,
+        String localSigningKey) {
+
+    public boolean localDisk() {
+        return localDir != null && !localDir.isBlank();
+    }
 
     public boolean privateBucket() {
         return publicBaseUrl == null || publicBaseUrl.isBlank();

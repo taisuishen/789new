@@ -20,3 +20,9 @@ Thumbs.db
 application-local*.yml
 deploy/k8s/secrets.yaml
 otel/*.jar
+
+# third-party XXL-Job schema, downloaded locally (deploy/README.md section 2)
+deploy/sql/90_xxl_job.sql
+# local KYC images (identity documents) and local service logs
+deploy/local/kyc-files/
+deploy/local/*.local.sql
