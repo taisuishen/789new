@@ -14,12 +14,14 @@ import com.bingo789.wallet.api.dto.BetAndPayoutCommand;
 import com.bingo789.wallet.api.dto.BetCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Executes a unified {@link WalletCommand} against the wallet: one RPC per wallet operation (a {@link WalletCommand.Batch}
@@ -28,6 +30,10 @@ import java.math.BigDecimal;
  * <p>
  * Any exception here (timeout, 5xx) propagates to the dispatcher and is answered as "retry": the outcome is
  * unknown, and the wallet's idempotency makes the provider's retry or rollback safe.
+ * <p>
+ * Providers that track open bets (ProviderAdapter#tracksOpenBets) have their token-bound commands recorded in the
+ * {@link OpenBetLedger}, which also answers {@link WalletCommand.OpenBets} and identifies the player of an expired token
+ * for the payout or refund of a stake placed with it.
  */
 @Component
 @RequiredArgsConstructor
@@ -39,6 +45,7 @@ public class WalletGateway {
     private final WalletClient wallet;
     private final UserClient users;
     private final GameSessions sessions;
+    private final OpenBetLedger openBets;
 
     public CommandOutcome execute(ProviderRuntime provider, WalletCommand command) {
         if (command instanceof WalletCommand.Authenticate auth) {
@@ -47,18 +54,15 @@ public class WalletGateway {
         if (command instanceof WalletCommand.Ack ack && ack.playerId() == null) {
             return CommandOutcome.of(Code.SUCCESS, null, ack.currency(), null);
         }
+        if (command instanceof WalletCommand.OpenBets query) {
+            if (!tracksOpenBets(provider)) {
+                return new CommandOutcome(Code.INVALID_REQUEST, null, null, null, null, false, "provider does not track open bets");
+            }
+            return new CommandOutcome(Code.SUCCESS, null, null, null, null, false, null, null,
+                    openBets.open(provider.code(), query.from(), query.to()));
+        }
         if (command instanceof WalletCommand.Session session) {
-            GameTokenView token = sessions.verify(provider.code(), session.token());
-            String innerPlayer = playerIdOf(session.command());
-            if (!token.valid() || innerPlayer != null && !innerPlayer.equals(PlayerIds.encode(token.userId()))) {
-                return CommandOutcome.of(Code.INVALID_TOKEN, innerPlayer, session.currency(), null);
-            }
-            // stakes need the player to be allowed to play now; wins / refunds of rounds in play are always credited
-            if (!token.playAllowed() && placesStake(session.command())) {
-                return CommandOutcome.of(Code.PLAYER_LOCKED, PlayerIds.encode(token.userId()), session.currency(), null);
-            }
-            String currency = session.currency() != null ? session.currency() : token.currency();
-            return run(provider, session.command(), token.userId(), PlayerIds.encode(token.userId()), currency);
+            return session(provider, session);
         }
         String playerId = playerIdOf(command);
         Long userId = PlayerIds.tryDecode(playerId);
@@ -67,6 +71,44 @@ public class WalletGateway {
         }
         String currency = command.currency() != null ? command.currency() : provider.defaultCurrency();
         return run(provider, command, userId, playerId, currency);
+    }
+
+    private CommandOutcome session(ProviderRuntime provider, WalletCommand.Session session) {
+        WalletCommand inner = session.command();
+        String innerPlayer = playerIdOf(inner);
+        boolean tracked = tracksOpenBets(provider);
+        GameTokenView token = sessions.verify(provider.code(), session.token());
+        if (!token.valid()) {
+            // the payout or refund of a tracked stake: the token it was placed with still names its player
+            OpenBetLedger.Holder holder = tracked && settlesStake(inner) ? openBets.holder(provider.code(), session.token()) : null;
+            if (holder == null || innerPlayer != null && !innerPlayer.equals(PlayerIds.encode(holder.userId()))) {
+                return CommandOutcome.of(Code.INVALID_TOKEN, innerPlayer, session.currency(), null);
+            }
+            String currency = session.currency() != null ? session.currency() : holder.currency();
+            return tracked(provider, session.token(), inner, holder.userId(), currency);
+        }
+        if (innerPlayer != null && !innerPlayer.equals(PlayerIds.encode(token.userId()))) {
+            return CommandOutcome.of(Code.INVALID_TOKEN, innerPlayer, session.currency(), null);
+        }
+        // stakes need the player to be allowed to play now; wins / refunds of rounds in play are always credited
+        if (!token.playAllowed() && placesStake(inner)) {
+            return CommandOutcome.of(Code.PLAYER_LOCKED, PlayerIds.encode(token.userId()), session.currency(), null);
+        }
+        String currency = session.currency() != null ? session.currency() : token.currency();
+        return tracked
+                ? tracked(provider, session.token(), inner, token.userId(), currency)
+                : run(provider, inner, token.userId(), PlayerIds.encode(token.userId()), currency);
+    }
+
+    /** A stake is recorded before its wallet call, every outcome after it (see OpenBetLedger). */
+    private CommandOutcome tracked(ProviderRuntime provider, String token, WalletCommand command, long userId, String currency) {
+        String playerId = PlayerIds.encode(userId);
+        if (OpenBetLedger.isStake(command) && currency != null && provider.supportsCurrency(currency)) {
+            openBets.pending(provider.code(), token, command, userId, currency);
+        }
+        CommandOutcome outcome = run(provider, command, userId, playerId, currency);
+        openBets.record(provider.code(), command, outcome);
+        return outcome;
     }
 
     private CommandOutcome run(ProviderRuntime provider, WalletCommand command, long userId, String playerId, String currency) {
@@ -78,11 +120,14 @@ public class WalletGateway {
         return switch (command) {
             case WalletCommand.Authenticate auth -> authenticate(provider, auth);
             case WalletCommand.Session s -> throw new IllegalArgumentException("nested session");
+            case WalletCommand.OpenBets q -> throw new IllegalArgumentException("not a player command");
             case WalletCommand.Ack a -> CommandOutcome.of(Code.SUCCESS, playerId, currency, null);
             case WalletCommand.Batch batch -> batch(provider, batch, userId, playerId, currency);
             case WalletCommand.GetBalance b -> balance(userId, playerId, currency);
             case WalletCommand.Bet b -> outcome(playerId, wallet.bet(new BetCommand(
                     userId, currency, code, fit(b.txnId()), fit(b.roundId()), b.gameCode(), b.amount(), b.roundClosed())));
+            case WalletCommand.TakeAll t -> outcome(playerId, wallet.betAll(new TakeAllBetCommand(
+                    userId, currency, code, fit(t.txnId()), fit(t.roundId()), t.gameCode(), provider.config().balanceScale())));
             case WalletCommand.Payout p -> outcome(playerId, wallet.payout(new PayoutCommand(
                     userId, currency, code, fit(p.txnId()), fit(p.roundId()), p.gameCode(), p.amount(), p.payoutType(),
                     fit(p.betTxnId()), provider.config().requireBetForPayout(), p.roundClosed())));
@@ -122,16 +167,26 @@ public class WalletGateway {
             return CommandOutcome.of(Code.TXN_NOT_FOUND, playerId, currency, null);
         }
         return new CommandOutcome(last.code(), last.playerId(), last.currency(), last.balance(), last.platformTxnId(),
-                allReplays, last.message());
+                allReplays, last.message(), last.amount(), List.of());
     }
 
     private static boolean placesStake(WalletCommand command) {
         return switch (command) {
             case WalletCommand.Bet b -> true;
+            case WalletCommand.TakeAll t -> true;
             case WalletCommand.BetAndPayout bp -> true;
             case WalletCommand.Batch batch -> batch.steps().stream().anyMatch(WalletGateway::placesStake);
             default -> false;
         };
+    }
+
+    private static boolean tracksOpenBets(ProviderRuntime provider) {
+        return provider.adapter() != null && provider.adapter().tracksOpenBets();
+    }
+
+    /** The payout or refund of a stake, which a provider may send with the stake's token after it expired. */
+    private static boolean settlesStake(WalletCommand command) {
+        return command instanceof WalletCommand.Payout || command instanceof WalletCommand.Rollback;
     }
 
     /** Opening a game session: the player must be allowed to play. */
@@ -165,7 +220,7 @@ public class WalletGateway {
             case INVALID_REQUEST -> Code.INVALID_REQUEST;
         };
         return new CommandOutcome(code, playerId, result.currency(), displayable(result.balance()),
-                result.txnId(), result.replay(), result.message());
+                result.txnId(), result.replay(), result.message(), result.txnAmount(), List.of());
     }
 
     /**
@@ -189,10 +244,12 @@ public class WalletGateway {
         return switch (command) {
             case WalletCommand.Authenticate a -> null;
             case WalletCommand.Session s -> playerIdOf(s.command()) != null ? playerIdOf(s.command()) : "token:" + s.token();
+            case WalletCommand.OpenBets q -> null;
             case WalletCommand.Batch b -> b.playerId();
             case WalletCommand.Ack a -> a.playerId();
             case WalletCommand.GetBalance b -> b.playerId();
             case WalletCommand.Bet b -> b.playerId();
+            case WalletCommand.TakeAll t -> t.playerId();
             case WalletCommand.Payout p -> p.playerId();
             case WalletCommand.BetAndPayout bp -> bp.playerId();
             case WalletCommand.Rollback r -> r.playerId();

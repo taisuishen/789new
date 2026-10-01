@@ -8,6 +8,7 @@ import com.bingo789.wallet.api.dto.OpenWalletCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.PlatformTxnCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.UpdateUserLineCommand;
 import com.bingo789.wallet.api.dto.UpdateWalletStatusCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
@@ -119,6 +120,52 @@ class WalletServiceIT {
         assertThat(retry.isSuccess()).isTrue();
         assertThat(retry.replay()).isTrue();
         assertThat(balance(user)).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void takeAllDebitsTheWholeBalanceAtTheProvidersScaleAndReplaysTheAmountTaken() {
+        long user = fundedUser("123.4567");
+        TakeAllBetCommand takeAll = takeAll(user, "ta-1", "r-ta");
+
+        WalletResult first = wallet.betAll(takeAll);
+        wallet.platformTxn(new PlatformTxnCommand(user, CUR, TxnType.DEPOSIT, "PAYMENT", "D-" + UUID.randomUUID(),
+                new BigDecimal("50"), "deposit while in game"));
+        WalletResult retry = wallet.betAll(takeAll);
+
+        assertThat(first.isSuccess()).isTrue();
+        assertThat(first.txnAmount()).isEqualByComparingTo("123.45");
+        assertThat(first.balance()).isEqualByComparingTo("0.0067");
+        assertThat(retry.replay()).isTrue();
+        assertThat(retry.txnAmount()).isEqualByComparingTo("123.45");
+        assertThat(balance(user)).isEqualByComparingTo("50.0067");
+    }
+
+    @Test
+    void takeAllIsAnOrdinaryBetForPayoutsAndRollbacks() {
+        long user = fundedUser("80");
+        assertThat(wallet.betAll(takeAll(user, "ta-1", "r-1")).isSuccess()).isTrue();
+
+        WalletResult rollIn = wallet.payout(payout(user, "w-1", "r-1", "95", TxnType.PAYOUT));
+        assertThat(rollIn.isSuccess()).isTrue();
+        assertThat(balance(user)).isEqualByComparingTo("95");
+
+        assertThat(wallet.betAll(takeAll(user, "ta-2", "r-2")).txnAmount()).isEqualByComparingTo("95");
+        WalletResult refund = wallet.rollback(new RollbackCommand(user, CUR, PROVIDER, user + "-rb-2", user + "-ta-2",
+                TxnType.BET, null, null));
+        assertThat(refund.isSuccess()).isTrue();
+        assertThat(balance(user)).isEqualByComparingTo("95");
+    }
+
+    @Test
+    void takeAllOfAnEmptyOrLockedWalletIsRefused() {
+        long empty = fundedUser("0.009");
+        long locked = fundedUser("10");
+        wallet.updateStatus(new UpdateWalletStatusCommand(locked, null, WalletStatus.BET_LOCKED, "SELF_EXCLUSION"));
+
+        assertThat(wallet.betAll(takeAll(empty, "ta-1", "r-1")).code()).isEqualTo(WalletResultCode.INSUFFICIENT_FUNDS);
+        assertThat(wallet.betAll(takeAll(locked, "ta-1", "r-1")).code()).isEqualTo(WalletResultCode.WALLET_LOCKED);
+        assertThat(balance(empty)).isEqualByComparingTo("0.009");
+        assertThat(balance(locked)).isEqualByComparingTo("10");
     }
 
     @Test
@@ -326,6 +373,10 @@ class WalletServiceIT {
 
     private static BetCommand bet(long user, String txnId, String roundId, String amount) {
         return new BetCommand(user, CUR, PROVIDER, user + "-" + txnId, roundId, "slot-1", new BigDecimal(amount), false);
+    }
+
+    private static TakeAllBetCommand takeAll(long user, String txnId, String roundId) {
+        return new TakeAllBetCommand(user, CUR, PROVIDER, user + "-" + txnId, roundId, "fish-1", 2);
     }
 
     private static PayoutCommand payout(long user, String txnId, String roundId, String amount, TxnType type) {

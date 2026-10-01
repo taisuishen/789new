@@ -9,6 +9,8 @@ import java.math.BigDecimal;
  * @param balance         current available balance at response time
  * @param txnBalanceAfter balance right after this transaction was first applied
  * @param replay          true when the request was a duplicate and the first result is returned
+ * @param txnAmount       amount of the transaction (of the last row written; for a take-all bet the stake taken),
+ *                        also on replays; null on refusals
  */
 public record WalletResult(
         WalletResultCode code,
@@ -17,18 +19,25 @@ public record WalletResult(
         BigDecimal balance,
         BigDecimal txnBalanceAfter,
         boolean replay,
-        String message) {
+        String message,
+        BigDecimal txnAmount) {
 
     public static WalletResult success(long txnId, String currency, BigDecimal balance, BigDecimal txnBalanceAfter) {
-        return new WalletResult(WalletResultCode.SUCCESS, txnId, currency, balance, txnBalanceAfter, false, null);
+        return success(txnId, currency, balance, txnBalanceAfter, null);
     }
 
-    public static WalletResult replay(long txnId, String currency, BigDecimal balance, BigDecimal txnBalanceAfter) {
-        return new WalletResult(WalletResultCode.SUCCESS, txnId, currency, balance, txnBalanceAfter, true, null);
+    public static WalletResult success(long txnId, String currency, BigDecimal balance, BigDecimal txnBalanceAfter,
+                                       BigDecimal txnAmount) {
+        return new WalletResult(WalletResultCode.SUCCESS, txnId, currency, balance, txnBalanceAfter, false, null, txnAmount);
+    }
+
+    public static WalletResult replay(long txnId, String currency, BigDecimal balance, BigDecimal txnBalanceAfter,
+                                      BigDecimal txnAmount) {
+        return new WalletResult(WalletResultCode.SUCCESS, txnId, currency, balance, txnBalanceAfter, true, null, txnAmount);
     }
 
     public static WalletResult reject(WalletResultCode code, String currency, BigDecimal balance, String message) {
-        return new WalletResult(code, null, currency, balance, null, false, message);
+        return new WalletResult(code, null, currency, balance, null, false, message, null);
     }
 
     public boolean isSuccess() {

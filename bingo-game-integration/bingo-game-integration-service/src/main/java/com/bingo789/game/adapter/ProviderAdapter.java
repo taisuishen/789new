@@ -53,6 +53,16 @@ public interface ProviderAdapter {
      */
     WalletCommand parse(CallbackRequest request, ProviderClient client);
 
+    /**
+     * True for protocols that query their open stakes ({@link WalletCommand.OpenBets}) and settle them with the token
+     * they were placed with, possibly after it expired (YGR fishing). The token-bound stakes of such a provider are then
+     * recorded with their token until paid out or refunded, and that record identifies the player for the payout or
+     * refund of the stake when the token no longer verifies.
+     */
+    default boolean tracksOpenBets() {
+        return false;
+    }
+
     /** Renders a business outcome exactly as this provider's spec requires (including duplicates = success). */
     CallbackResponse render(CallbackRequest request, WalletCommand command, CommandOutcome outcome, ProviderClient client);
 

@@ -9,6 +9,7 @@ import com.bingo789.wallet.api.dto.OpenWalletCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.PlatformTxnCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.UpdateUserLineCommand;
 import com.bingo789.wallet.api.dto.UpdateWalletStatusCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
@@ -29,6 +30,11 @@ public class WalletInternalController implements WalletApi {
     @Override
     public WalletResult bet(@Valid @RequestBody BetCommand command) {
         return walletService.bet(command);
+    }
+
+    @Override
+    public WalletResult betAll(@Valid @RequestBody TakeAllBetCommand command) {
+        return walletService.betAll(command);
     }
 
     @Override

@@ -11,6 +11,7 @@ import com.bingo789.wallet.api.dto.BetCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.PlatformTxnCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
 import com.bingo789.wallet.api.enums.TxnType;
 import com.bingo789.wallet.api.enums.WalletResultCode;
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -71,6 +73,29 @@ public class WalletTxnExecutor {
         Wallet wallet = requireWallet(c.userId(), c.currency());
         WalletTxn txn = ledgerRow(wallet, TxnType.BET, amount.negate(), amount, c.providerCode(), c.providerTxnId())
                 .roundId(c.roundId()).gameCode(c.gameCode()).roundClosed(c.roundClosed())
+                .build();
+        return commit(wallet, txn);
+    }
+
+    /**
+     * Takes the row lock first, then reads the balance it protects: nothing can change it between the read and the
+     * debit. An empty (or, at the provider's scale, zero) balance or a wallet that may not stake is refused.
+     */
+    @Transactional(timeout = TX_TIMEOUT_SECONDS)
+    public WalletResult betAll(TakeAllBetCommand c) {
+        if (walletMapper.lockRow(c.userId(), c.currency()) == 0) {
+            throw Rejected.of(WalletResultCode.WALLET_NOT_FOUND, null);
+        }
+        Wallet locked = requireWallet(c.userId(), c.currency());
+        BigDecimal amount = locked.getBalance().setScale(c.scale(), RoundingMode.DOWN).setScale(Money.SCALE);
+        if (amount.signum() <= 0 || locked.getStatus() > WalletStatus.ACTIVE.code()
+                || walletMapper.debit(c.userId(), c.currency(), amount, WalletStatus.ACTIVE.code()) == 0) {
+            throw Rejected.debitRefused(WalletStatus.ACTIVE);
+        }
+        Wallet wallet = requireWallet(c.userId(), c.currency());
+        WalletTxn txn = ledgerRow(wallet, TxnType.BET, amount.negate(), amount, c.providerCode(), c.providerTxnId())
+                .roundId(c.roundId()).gameCode(c.gameCode())
+                .remark("take all")
                 .build();
         return commit(wallet, txn);
     }
@@ -193,7 +218,8 @@ public class WalletTxnExecutor {
                 .build();
         txnMapper.insert(rollback);
         commitHooks.register(wallet, List.of(tombstone, rollback));
-        return WalletResult.success(rollback.getId(), wallet.getCurrency(), wallet.getBalance(), rollback.getBalanceAfter());
+        return WalletResult.success(rollback.getId(), wallet.getCurrency(), wallet.getBalance(), rollback.getBalanceAfter(),
+                rollback.getAmount());
     }
 
     /** Provider re-settlement: a new signed row referencing the original, never an edit of it. */
@@ -363,7 +389,7 @@ public class WalletTxnExecutor {
         }
         commitHooks.register(wallet, List.of(txns));
         WalletTxn last = txns[txns.length - 1];
-        return WalletResult.success(last.getId(), wallet.getCurrency(), wallet.getBalance(), last.getBalanceAfter());
+        return WalletResult.success(last.getId(), wallet.getCurrency(), wallet.getBalance(), last.getBalanceAfter(), last.getAmount());
     }
 
     private WalletTxn.WalletTxnBuilder ledgerRow(Wallet wallet, TxnType type, BigDecimal balanceDelta, BigDecimal amount,

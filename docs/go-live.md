@@ -372,6 +372,7 @@ spring:
 | bingo-kyc | `kycUserSyncJob` | `*/10 * * * * ?` | KYC 结果同步到用户 | ✓ |
 | bingo-wallet | `walletTxnRetentionJob` | `0 */10 5-10 * * ?` | 流水只留 30 天（幂等窗口）；**StarRocks 开始导入流水后再开启** | |
 | bingo-game-integration | `transferRecoveryJob` | `*/30 * * * * ?` | 转账钱包卡单恢复 | |
+| bingo-game-integration | `openBetRetentionJob` | `0 17 * * * ?` | 删除关闭超过 7 天的 `open_bet`（YGR 捕鱼未结注单跟踪） | |
 | bingo-lobby | `lobbyGameSyncJob` | `0 0 */6 * * ?` | 同步厂商游戏目录 | |
 | bingo-bet-record | `betRecordProviderPullJob` | `0 * * * * ?` | **每个厂商建一个任务，参数 = 厂商代码** | |
 | bingo-bet-record | `betRecordUnsettledRoundJob` | `0 * * * * ?` | 超时未结算局 | |

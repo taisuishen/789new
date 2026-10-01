@@ -124,11 +124,28 @@ class Cq9AdapterTest {
     }
 
     @Test
-    void takeAllAndUnknownActionsAreRefused() {
-        assertThatThrownBy(() -> adapter.parse(form("transaction/game/takeall", Map.of("account", "b7891001",
+    void takeAllTakesTheWholeBalanceAndAnswersTheAmountTaken() {
+        CallbackRequest request = form("transaction/game/takeall", Map.of("account", "b7891001", "eventTime", TIME,
+                "gamehall", "cq9", "gamecode", "AB3", "roundid", "r-ta", "mtcode", "t-1"));
+        WalletCommand command = adapter.parse(request, client);
+
+        assertThat(command).isEqualTo(new WalletCommand.TakeAll("b7891001", null, "t-1", "r-ta", "AB3"));
+        CommandOutcome taken = new CommandOutcome(CommandOutcome.Code.SUCCESS, "b7891001", "PHP", new BigDecimal("0.0040"), 1L,
+                false, null, new BigDecimal("600210.1200"), List.of());
+        JsonNode ok = json(adapter.render(request, command, taken, client));
+        assertThat(ok.path("status").path("code").asString()).isEqualTo("0");
+        assertThat(ok.path("data").path("amount").decimalValue()).isEqualByComparingTo("600210.12");
+        assertThat(ok.path("data").path("balance").decimalValue()).isEqualByComparingTo("0");
+        assertThat(ok.path("data").path("currency").asString()).isEqualTo("PHP");
+        assertThat(code(adapter.render(request, command, outcome(CommandOutcome.Code.INSUFFICIENT_FUNDS), client))).isEqualTo("1005");
+    }
+
+    @Test
+    void unknownActionsAreRefused() {
+        assertThatThrownBy(() -> adapter.parse(form("transaction/game/takesome", Map.of("account", "b7891001",
                 "mtcode", "t-1", "roundid", "r")), client))
                 .isInstanceOfSatisfying(CallbackException.class, e -> assertThat(e.error()).isEqualTo(CallbackError.UNKNOWN_ACTION));
-        assertThat(code(adapter.renderError(form("transaction/game/takeall", Map.of()), CallbackError.UNKNOWN_ACTION))).isEqualTo("1002");
+        assertThat(code(adapter.renderError(form("transaction/game/takesome", Map.of()), CallbackError.UNKNOWN_ACTION))).isEqualTo("1002");
     }
 
     @Test

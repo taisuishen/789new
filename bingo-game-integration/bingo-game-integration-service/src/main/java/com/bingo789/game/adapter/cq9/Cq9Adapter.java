@@ -44,7 +44,7 @@ import java.util.UUID;
 /**
  * CQ9 seamless wallet. CQ9 appends fixed paths to the registered base URL {@code /callback/CQ9}:
  * {@code GET player/check/{account}}, {@code GET transaction/balance/{account}}, {@code POST
- * transaction/game/{bet|endround|rollout|rollin|debit|credit|refund}} and {@code POST transaction/user/payoff}
+ * transaction/game/{bet|endround|rollout|takeall|rollin|debit|credit|refund}} and {@code POST transaction/user/payoff}
  * (application/x-www-form-urlencoded). Replies are JSON {@code {"data":..,"status":{"code","message","datetime"}}},
  * always HTTP 200; amounts are decimals in currency units.
  * <p>
@@ -54,7 +54,9 @@ import java.util.UUID;
  * <p>
  * Idempotency: {@code mtcode} identifies every money call. bet and rollout are bets of {@code roundid}; endround pays
  * every {@code data[]} item as its own payout (one batch, so a retry completes a partly applied settlement; free-ticket
- * rounds as FREE_PAYOUT, which needs no bet); rollin is the payout of a rollout round and needs its bet (BET_NOT_FOUND
+ * rounds as FREE_PAYOUT, which needs no bet); takeall is a bet of the whole balance (rounded down to {@code balance-scale},
+ * answered with the amount taken - the first one on a retry - and the remaining balance, shown as 0); rollin is the
+ * payout of a rollout / takeall round and needs its bet (BET_NOT_FOUND
  * = 1014, CQ9 retries); debit / credit (补扣 / 补派) are signed adjustments; refund reverses the bet with that mtcode;
  * payoff is a promo payout of round {@code promo:<promoid>}. Duplicates answer success with the current balance.
  * <p>
@@ -64,9 +66,8 @@ import java.util.UUID;
  * "Transaction cancelled") instead of debited; an endround item without a live bet in the round answers 1014 while
  * {@code require-bet-for-payout} is true (old paid regardless); no 2 h / 7 d lookback windows; debit / credit no longer
  * check that the round has a bet (Adjust has no such check); balances are rounded DOWN at {@code balance-scale} (old
- * HALF_DOWN at 4 decimals); a GET without wtoken answers 1003 instead of HTTP 400. {@code takeall} is NOT supported and
- * answered 1002: it debits the whole, unknown balance and must echo it, which no wallet command can express - configure
- * the CQ9 agent for rollout / rollin. Bet pull pages by the cumulative row count against {@code TotalSize} (the old
+ * HALF_DOWN at 4 decimals); a GET without wtoken answers 1003 instead of HTTP 400; a takeall of an empty balance
+ * answers 1005. Bet pull pages by the cumulative row count against {@code TotalSize} (the old
  * loop always re-sent page 1) and pulls sports-lottery records from the second endpoint.
  * <p>
  * Configuration ({@code bingo.providers.CQ9}): {@code secret} = wtoken, {@code secrets.apiToken} = the agent's API
@@ -129,6 +130,8 @@ public class Cq9Adapter implements ProviderAdapter {
                     null, Fields.required(p, "mtcode"), Fields.required(p, "roundid"), p.get("gamecode"),
                     positive(p.get("amount"), "amount"), false);
             case "transaction/game/endround" -> endRound(p);
+            case "transaction/game/takeall" -> new WalletCommand.TakeAll(Fields.required(p, "account"), null,
+                    Fields.required(p, "mtcode"), Fields.required(p, "roundid"), p.get("gamecode"));
             case "transaction/game/rollin" -> new WalletCommand.Payout(Fields.required(p, "account"), null,
                     Fields.required(p, "mtcode"), Fields.required(p, "roundid"), p.get("gamecode"),
                     nonNegative(p.get("amount"), "amount"), TxnType.PAYOUT, null, true);
@@ -144,7 +147,6 @@ public class Cq9Adapter implements ProviderAdapter {
             case "transaction/user/payoff" -> new WalletCommand.Payout(Fields.required(p, "account"), null,
                     Fields.required(p, "mtcode"), "promo:" + Fields.required(p, "promoid"), null,
                     positive(p.get("amount"), "amount"), TxnType.PROMO_PAYOUT, null, true);
-            // takeall (debit the whole balance) is not expressible, see the class comment
             default -> throw CallbackException.unknownAction(action);
         };
     }
@@ -190,6 +192,10 @@ public class Cq9Adapter implements ProviderAdapter {
         boolean nothingToReverse = outcome.code() == CommandOutcome.Code.TXN_NOT_FOUND && command instanceof WalletCommand.Rollback;
         if (outcome.isSuccess() || nothingToReverse) {
             Map<String, Object> data = new LinkedHashMap<>();
+            if (command instanceof WalletCommand.TakeAll) {
+                // the balance before the takeall = the amount taken
+                data.put("amount", number(Fields.balance(outcome.amount(), client.config().balanceScale())));
+            }
             data.put("balance", number(Fields.balance(outcome.balance(), client.config().balanceScale())));
             data.put("currency", outcome.currency());
             return reply("0", "Success", data);

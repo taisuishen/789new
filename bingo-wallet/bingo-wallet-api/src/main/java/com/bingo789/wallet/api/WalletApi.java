@@ -8,6 +8,7 @@ import com.bingo789.wallet.api.dto.OpenWalletCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.PlatformTxnCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.UpdateUserLineCommand;
 import com.bingo789.wallet.api.dto.UpdateWalletStatusCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
@@ -30,6 +31,9 @@ public interface WalletApi {
 
     @PostMapping(PREFIX + "/bet")
     WalletResult bet(@RequestBody BetCommand command);
+
+    @PostMapping(PREFIX + "/bet-all")
+    WalletResult betAll(@RequestBody TakeAllBetCommand command);
 
     @PostMapping(PREFIX + "/payout")
     WalletResult payout(@RequestBody PayoutCommand command);

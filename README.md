@@ -124,7 +124,9 @@ KYC、反洗钱（AML）、负责任博彩（RG）从架构初期就放在用户
 - 按会话 token 识别玩家的厂商（PS、WE、JILI、PG、EVO、YGR 的部分接口）走 `WalletCommand.Session`：玩家被自我排除或冻结后不能再下注，但在玩局的派彩和退款照常入账。
 - 一次回调多笔（CQ9 EndRound、FC Settle、WE credit 数组等）走 `WalletCommand.Batch`，逐笔幂等。
 - 钱包拒绝给已派彩的注单退注（`BET_SETTLED`），作废已结算的局要先冲正派彩再退注。
-- 暂不支持：CQ9 / YGR 的 takeAll（全额下注）、YGR roundCheck、千倍单位币种（VND / IDR 等）。
+- 全额下注（CQ9 takeall、YGR rollOut 带 `takeAll`）走 `WalletCommand.TakeAll` → 钱包 `/bet-all`：持行锁取当前可用余额（按厂商 `balance-scale` 向下取整），记一笔普通 `BET`；回包的 `amount` 来自 `WalletResult.txnAmount`，重试时返回第一次扣的金额。余额为 0 时答余额不足。
+- 需要查询未结注单的厂商（`ProviderAdapter#tracksOpenBets`，目前只有 YGR 捕鱼）：会话下注在调钱包**之前**写入 `bingo_game.open_bet`（PENDING），钱包结果出来后改为 OPEN（已扣款）或 CLOSED（被拒）；派彩或退款成功后改为 CLOSED。YGR `betSlip/roundCheck` 返回时间段内 PENDING 和 OPEN 的注单，带上当初的 connectToken。token 过期以后，这张表仍能定位玩家，所以凭这个 token 的 rollIn / refund 照常入账（下注不行）。`openBetRetentionJob` 删除关闭超过 7 天的记录。
+- 暂不支持：千倍单位币种（VND / IDR 等）。
 
 ### 对账、注单、分析
 

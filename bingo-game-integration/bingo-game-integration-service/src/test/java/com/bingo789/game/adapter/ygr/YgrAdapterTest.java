@@ -7,6 +7,7 @@ import com.bingo789.game.adapter.model.CallbackException;
 import com.bingo789.game.adapter.model.CallbackRequest;
 import com.bingo789.game.adapter.model.CallbackResponse;
 import com.bingo789.game.adapter.model.CommandOutcome;
+import com.bingo789.game.adapter.model.OpenBet;
 import com.bingo789.game.adapter.model.WalletCommand;
 import com.bingo789.game.adapter.support.Ciphers;
 import com.bingo789.game.api.dto.ProviderBetRecordView;
@@ -85,6 +86,7 @@ class YgrAdapterTest {
         assertThat(((WalletCommand.Session) rollOut).command()).isInstanceOfSatisfying(WalletCommand.Bet.class, bet -> {
             assertThat(bet.txnId()).isEqualTo("O1");
             assertThat(bet.roundId()).isEqualTo("F1");
+            assertThat(bet.gameCode()).isEqualTo("10001");
             assertThat(bet.amount()).isEqualByComparingTo("100");
             assertThat(bet.roundClosed()).isFalse();
         });
@@ -99,11 +101,53 @@ class YgrAdapterTest {
         assertThat(((WalletCommand.Session) refund).command())
                 .isEqualTo(new WalletCommand.Rollback(null, null, "refund:O1", "O1", TxnType.BET, null, null));
 
-        assertThatThrownBy(() -> adapter.parse(post("transaction/rollOut", AUTH,
-                "{\"connectToken\":\"" + CONNECT + "\",\"transID\":\"O2\",\"roundID\":\"F2\",\"amount\":0,\"takeAll\":true}"), client))
+        assertThat(adapter.tracksOpenBets()).isTrue();
+    }
+
+    @Test
+    void aTakeAllRollOutTakesTheBalanceAndAnswersTheAmountTaken() {
+        CallbackRequest request = post("transaction/rollOut", AUTH,
+                "{\"connectToken\":\"" + CONNECT + "\",\"transID\":\"O2\",\"roundID\":\"F2\",\"amount\":0,\"takeAll\":true}");
+        WalletCommand command = adapter.parse(request, client);
+
+        assertThat(command).isEqualTo(new WalletCommand.Session(TOKEN, new WalletCommand.TakeAll(null, null, "O2", "F2", "10001")));
+        CommandOutcome taken = new CommandOutcome(CommandOutcome.Code.SUCCESS, null, "PHP", BigDecimal.ZERO, 1L, false, null,
+                new BigDecimal("250.4000"), List.of());
+        JsonNode reply = body(adapter.render(request, command, taken, client));
+        assertThat(reply.path("status").path("code").asString()).isEqualTo("0");
+        assertThat(reply.path("data").path("amount").decimalValue()).isEqualByComparingTo("250.40");
+        assertThat(reply.path("data").path("balance").decimalValue()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void roundCheckListsTheOpenRollOutsWithTheirConnectToken() {
+        CallbackRequest request = post("betSlip/roundCheck", AUTH,
+                "{\"fromDate\":\"2026-10-01T00:00:00.000+08:00\",\"toDate\":\"2026-10-01T01:00:00.000+08:00\"}");
+        WalletCommand command = adapter.parse(request, client);
+
+        assertThat(command).isEqualTo(new WalletCommand.OpenBets(Instant.parse("2026-09-30T16:00:00Z"),
+                Instant.parse("2026-09-30T17:00:00Z")));
+        CommandOutcome outcome = new CommandOutcome(CommandOutcome.Code.SUCCESS, null, null, null, null, false, null, null, List.of(
+                new OpenBet("O1", "F1", new BigDecimal("500.0000"), TOKEN, "10001", Instant.parse("2026-09-30T16:14:13.997Z"), false),
+                new OpenBet("O3", "F3", null, TOKEN, null, Instant.parse("2026-09-30T16:20:00Z"), true)));
+        JsonNode reply = body(adapter.render(request, command, outcome, client));
+
+        assertThat(reply.path("status").path("code").asString()).isEqualTo("0");
+        JsonNode first = reply.path("data").get(0);
+        assertThat(first.path("transID").asString()).isEqualTo("O1");
+        assertThat(first.path("roundID").asString()).isEqualTo("F1");
+        assertThat(first.path("amount").decimalValue()).isEqualByComparingTo("500");
+        assertThat(first.path("connectToken").asString()).isEqualTo(CONNECT);
+        assertThat(first.path("rollTime").asString()).isEqualTo("2026-10-01T00:14:13.997+08:00");
+        JsonNode pending = reply.path("data").get(1);
+        assertThat(pending.path("amount").decimalValue()).isEqualByComparingTo("0");
+        assertThat(pending.path("connectToken").asString()).isEqualTo(TOKEN);
+
+        assertThatThrownBy(() -> adapter.parse(post("betSlip/roundCheck", AUTH, "{\"fromDate\":\"2026-10-01T01:00:00+08:00\","
+                + "\"toDate\":\"2026-10-01T00:00:00+08:00\"}"), client))
                 .isInstanceOfSatisfying(CallbackException.class, e -> assertThat(e.error()).isEqualTo(CallbackError.BAD_REQUEST));
-        assertThatThrownBy(() -> adapter.parse(post("betSlip/roundCheck", AUTH, "{}"), client))
-                .isInstanceOfSatisfying(CallbackException.class, e -> assertThat(e.error()).isEqualTo(CallbackError.UNKNOWN_ACTION));
+        assertThatThrownBy(() -> adapter.parse(post("betSlip/roundCheck", AUTH, "{\"fromDate\":\"yesterday\",\"toDate\":\"now\"}"), client))
+                .isInstanceOfSatisfying(CallbackException.class, e -> assertThat(e.error()).isEqualTo(CallbackError.BAD_REQUEST));
     }
 
     @Test

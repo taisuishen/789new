@@ -12,6 +12,7 @@ import com.bingo789.wallet.api.dto.OpenWalletCommand;
 import com.bingo789.wallet.api.dto.PayoutCommand;
 import com.bingo789.wallet.api.dto.PlatformTxnCommand;
 import com.bingo789.wallet.api.dto.RollbackCommand;
+import com.bingo789.wallet.api.dto.TakeAllBetCommand;
 import com.bingo789.wallet.api.dto.UpdateUserLineCommand;
 import com.bingo789.wallet.api.dto.UpdateWalletStatusCommand;
 import com.bingo789.wallet.api.dto.WalletResult;
@@ -67,6 +68,14 @@ public class WalletService {
             BigDecimal amount = Money.normalizeNonNegative(c.amount());
             IdempotencyKey key = new IdempotencyKey(c.providerCode(), c.providerTxnId(), TxnType.BET);
             return idempotent(c.userId(), c.currency(), List.of(key), () -> executor.bet(c, amount));
+        });
+    }
+
+    /** A replay answers the amount the first request took, whatever the balance is now. */
+    public WalletResult betAll(TakeAllBetCommand c) {
+        return measured("bet_all", c.userId(), () -> {
+            IdempotencyKey key = new IdempotencyKey(c.providerCode(), c.providerTxnId(), TxnType.BET);
+            return idempotent(c.userId(), c.currency(), List.of(key), () -> executor.betAll(c));
         });
     }
 
@@ -238,7 +247,7 @@ public class WalletService {
             if (!txn.getCurrency().equals(currency)) {
                 return WalletResult.reject(WalletResultCode.INVALID_REQUEST, currency, balance, "currency does not match the original request");
             }
-            return WalletResult.replay(txn.getId(), currency, balance, txn.getBalanceAfter());
+            return WalletResult.replay(txn.getId(), currency, balance, txn.getBalanceAfter(), txn.getAmount());
         }
         if (mustExist) {
             log.error("idempotency key collision with another player: user={}, keys={}", userId, keys);

@@ -3,6 +3,7 @@ package com.bingo789.game.adapter.model;
 import com.bingo789.wallet.api.enums.TxnType;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -26,6 +27,14 @@ public sealed interface WalletCommand {
 
     record Bet(String playerId, String currency, String txnId, String roundId, String gameCode,
                BigDecimal amount, boolean roundClosed) implements WalletCommand {
+    }
+
+    /**
+     * A stake of the player's whole balance (CQ9 takeall, YGR rollOut with takeAll). The amount taken is not known
+     * when the command is built: it comes back in {@link CommandOutcome#amount()}, the same on replays. The balance is
+     * taken rounded down to the provider's balance scale. Payouts and rollbacks of it are those of an ordinary bet.
+     */
+    record TakeAll(String playerId, String currency, String txnId, String roundId, String gameCode) implements WalletCommand {
     }
 
     /** @param payoutType PAYOUT, FREE_PAYOUT, JACKPOT_PAYOUT or PROMO_PAYOUT */
@@ -75,6 +84,20 @@ public sealed interface WalletCommand {
             if (steps.isEmpty() || steps.stream().anyMatch(s -> s instanceof Batch || s instanceof Session)) {
                 throw new IllegalArgumentException("a batch needs plain steps");
             }
+        }
+    }
+
+    /**
+     * The provider asks which of its token-bound stakes placed in [from, to) are still open: debited, or possibly
+     * debited, and neither paid out nor refunded (YGR betSlip/roundCheck), to resend the payout or refund them. Only
+     * for adapters that track open bets ({@code ProviderAdapter#tracksOpenBets}); answered in
+     * {@link CommandOutcome#openBets()}. Moves no money and names no player.
+     */
+    record OpenBets(Instant from, Instant to) implements WalletCommand {
+
+        @Override
+        public String currency() {
+            return null;
         }
     }
 

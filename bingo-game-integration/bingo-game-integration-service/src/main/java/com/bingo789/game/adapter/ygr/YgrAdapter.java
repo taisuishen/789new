@@ -9,6 +9,7 @@ import com.bingo789.game.adapter.model.CallbackException;
 import com.bingo789.game.adapter.model.CallbackRequest;
 import com.bingo789.game.adapter.model.CallbackResponse;
 import com.bingo789.game.adapter.model.CommandOutcome;
+import com.bingo789.game.adapter.model.OpenBet;
 import com.bingo789.game.adapter.model.RoundStatus;
 import com.bingo789.game.adapter.model.WalletCommand;
 import com.bingo789.game.adapter.support.Ciphers;
@@ -59,9 +60,16 @@ import java.util.concurrent.ThreadLocalRandom;
  * <p>
  * Idempotency: addGameResult (slots) is one atomic BetAndPayout, bet keyed {@code transID}, payout keyed
  * {@code roundID} (YGR's "round id duplicated" semantics), round {@code roundID}. Fishing: rollOut is a BET
- * ({@code transID}) in round {@code roundID}, rollIn the PAYOUT ({@code transID}) closing that round, refund reverses
- * exactly the rollOut {@code transID} (before its rollOut: tombstone, the late rollOut is then rejected). Duplicates
- * answer YGR's duplicate codes: 208 for addGameResult, 203 for rollOut / rollIn / refund.
+ * ({@code transID}) in round {@code roundID} of game {@code <gameCode>}; with {@code takeAll} the whole balance (rounded
+ * down to {@code balance-scale}) is taken and answered in {@code data.amount}, the first amount on a retry. rollIn is the
+ * PAYOUT ({@code transID}) closing that round, refund reverses exactly the rollOut {@code transID} (before its rollOut:
+ * tombstone, the late rollOut is then rejected). Duplicates answer YGR's duplicate codes: 208 for addGameResult, 203
+ * for rollOut / rollIn / refund.
+ * <p>
+ * Fishing compensation ("補單"): rollOuts are tracked with their connectToken ({@link #tracksOpenBets}, see
+ * OpenBetLedger). {@code betSlip/roundCheck} answers the rollOuts received in [fromDate, toDate) that are neither rolled
+ * in nor refunded, including those whose wallet call did not answer (their amount is 0 when a takeAll's amount is not
+ * known); YGR then resends their rollIn or refunds them, with that connectToken even after it expired.
  * <p>
  * Deliberate deviations from the old integration: addGameResult can no longer pay the win without the bet (the old
  * compensation left the bet marker, so YGR's retry credited the win on top of the refunded bet); insufficient funds
@@ -69,14 +77,10 @@ import java.util.concurrent.ThreadLocalRandom;
  * a refund of an unknown rollOut succeeds (tombstone) instead of 404; no 24-hour lookup window; balances are rounded
  * DOWN (old: HALF_UP); status times are UTC+8.
  * <p>
- * Not supported (answered 201 / 404, the lead engineer decides): {@code takeAll} rollOuts (the stake must be known
- * when the command is built), {@code betSlip/roundCheck} (needs a wallet query of open rounds with their tokens),
- * {@code token/createGuestConnectToken} (tokens are issued only by user-service at launch).
- * {@code token/delConnectToken} answers success for a valid token but does not revoke it (no revocation API; the token
- * expires by its own TTL). Gaps: a refund after a rollIn is not refused (the wallet reverses a bet even when its round
- * is paid; YGR normally never does this); credits need a verifiable token (a suspended player's rollIn is refused
- * until the token verifies again); fishing records of the bet history are per wager and do not match the
- * rollOut / rollIn round totals.
+ * Not supported (answered 404): {@code token/createGuestConnectToken} (tokens are issued only by user-service at
+ * launch). {@code token/delConnectToken} answers success for a valid token but does not revoke it (no revocation API;
+ * the token expires by its own TTL). Gaps: a refund after a rollIn is refused by the wallet (BET_SETTLED) and answered
+ * 203; fishing records of the bet history are per wager and do not match the rollOut / rollIn round totals.
  * <p>
  * Configuration ({@code bingo.providers.YGR}): {@code secret} = the callback Authorization value, {@code operator-id} =
  * agentId (e.g. {@code 789_BETBINGO_PHP}), {@code secrets.agentKey} = agent secret key (bet-history Key),
@@ -109,6 +113,7 @@ public class YgrAdapter implements ProviderAdapter {
     private static final DateTimeFormatter KEY_DAY = DateTimeFormatter.ofPattern("yyMMd");
     private static final String ADD_GAME_RESULT = "transaction/addGameResult";
     private static final String ROLL_OUT = "transaction/rollOut";
+    private static final String ROUND_CHECK = "betSlip/roundCheck";
     private static final String ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
     @Override
@@ -136,11 +141,11 @@ public class YgrAdapter implements ProviderAdapter {
             case ADD_GAME_RESULT -> addGameResult(json(request));
             case ROLL_OUT -> {
                 JsonNode b = json(request);
-                if (b.path("takeAll").asBoolean(false)) {
-                    throw CallbackException.badRequest("takeAll rollOut is not supported");
-                }
-                yield new WalletCommand.Session(sessionToken(b), new WalletCommand.Bet(null, null, text(b, "transID"),
-                        text(b, "roundID"), null, decimal(b, "amount"), false));
+                WalletCommand stake = b.path("takeAll").asBoolean(false)
+                        ? new WalletCommand.TakeAll(null, null, text(b, "transID"), text(b, "roundID"), gameId(b))
+                        : new WalletCommand.Bet(null, null, text(b, "transID"), text(b, "roundID"), gameId(b),
+                        decimal(b, "amount"), false);
+                yield new WalletCommand.Session(sessionToken(b), stake);
             }
             case "transaction/rollIn" -> {
                 JsonNode b = json(request);
@@ -154,9 +159,25 @@ public class YgrAdapter implements ProviderAdapter {
                 yield new WalletCommand.Session(sessionToken(b), new WalletCommand.Rollback(null, null, "refund:" + rollOut,
                         rollOut, TxnType.BET, null, null));
             }
-            // token/createGuestConnectToken and betSlip/roundCheck are not supported (see class comment)
+            case ROUND_CHECK -> roundCheck(json(request));
+            // token/createGuestConnectToken is not supported (see class comment)
             default -> throw CallbackException.unknownAction(request.action());
         };
+    }
+
+    /** [fromDate, toDate), RFC 3339. */
+    private static WalletCommand roundCheck(JsonNode b) {
+        Instant from = requiredTime(b, "fromDate");
+        Instant to = requiredTime(b, "toDate");
+        if (!from.isBefore(to)) {
+            throw CallbackException.badRequest("fromDate must be before toDate");
+        }
+        return new WalletCommand.OpenBets(from, to);
+    }
+
+    @Override
+    public boolean tracksOpenBets() {
+        return true;
     }
 
     /** Slots: stake and win of one spin in one call; winLoseAmount must be payoutAmount - betAmount. */
@@ -188,6 +209,9 @@ public class YgrAdapter implements ProviderAdapter {
         if (code != OK) {
             return reply(code, null);
         }
+        if (action.equals(ROUND_CHECK)) {
+            return reply(OK, openRounds(outcome, client));
+        }
         BigDecimal balance = number(Fields.balance(outcome.balance(), client.config().balanceScale()));
         Map<String, Object> data = new LinkedHashMap<>();
         switch (action) {
@@ -210,12 +234,31 @@ public class YgrAdapter implements ProviderAdapter {
             default -> {
                 data.put("currency", outcome.currency());
                 data.put("balance", balance);
-                if (action.equals(ROLL_OUT) && command instanceof WalletCommand.Session s && s.command() instanceof WalletCommand.Bet bet) {
-                    data.put("amount", bet.amount());
+                if (action.equals(ROLL_OUT) && command instanceof WalletCommand.Session s) {
+                    // the amount the wallet took: a takeAll's is known only now, a retry's is the first one
+                    BigDecimal taken = outcome.amount() != null ? outcome.amount()
+                            : s.command() instanceof WalletCommand.Bet bet ? bet.amount() : null;
+                    data.put("amount", number(Fields.balance(taken, client.config().balanceScale())));
                 }
             }
         }
         return reply(OK, data);
+    }
+
+    /** roundCheck data[]: the connectToken as YGR got it at launch (token.gameCode), so it can settle the round with it. */
+    private static List<Map<String, Object>> openRounds(CommandOutcome outcome, ProviderClient client) {
+        List<Map<String, Object>> rounds = new ArrayList<>(outcome.openBets().size());
+        for (OpenBet bet : outcome.openBets()) {
+            Map<String, Object> round = new LinkedHashMap<>();
+            round.put("transID", bet.txnId());
+            round.put("roundID", bet.roundId());
+            round.put("amount", number(Fields.balance(bet.amount() != null ? bet.amount() : BigDecimal.ZERO,
+                    client.config().balanceScale())));
+            round.put("connectToken", bet.gameCode() == null || bet.gameCode().isBlank() ? bet.token() : bet.token() + "." + bet.gameCode());
+            round.put("rollTime", STATUS_TIME.format(bet.placedAt().atOffset(BingoTime.ZONE)));
+            rounds.add(round);
+        }
+        return rounds;
     }
 
     /** 999 "Something wrong" is YGR's retryable error; never 0. */
@@ -399,6 +442,14 @@ public class YgrAdapter implements ProviderAdapter {
         return sb.toString();
     }
 
+    private static Instant requiredTime(JsonNode body, String field) {
+        try {
+            return time(text(body, field));
+        } catch (DateTimeParseException e) {
+            throw CallbackException.badRequest(field + " is not an RFC 3339 time");
+        }
+    }
+
     /** YGR times are UTC+8 wall clock ({@code yyyy-MM-dd'T'HH:mm:ss[.SSS]}), or RFC 3339 with an offset. */
     private static Instant time(String value) {
         if (value == null || value.isBlank()) {
@@ -419,7 +470,8 @@ public class YgrAdapter implements ProviderAdapter {
         return value == null ? BigDecimal.ZERO : new BigDecimal(value);
     }
 
-    private static CallbackResponse reply(int code, Map<String, Object> data) {
+    /** @param data the {@code data} object (an array for roundCheck), omitted when null */
+    private static CallbackResponse reply(int code, Object data) {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("code", String.valueOf(code));
         status.put("message", message(code));
