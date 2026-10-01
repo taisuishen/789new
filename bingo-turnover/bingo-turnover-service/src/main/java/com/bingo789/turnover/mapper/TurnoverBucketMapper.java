@@ -47,6 +47,18 @@ public interface TurnoverBucketMapper extends BaseMapper<TurnoverBucket> {
             """)
     int updateState(@Param("b") TurnoverBucket bucket);
 
+    /**
+     * Round revision taking valid bet back: like {@link #updateState} but also for a COMPLETED bucket that is reopened.
+     * Optimistic on the version only.
+     */
+    @Update("""
+            UPDATE turnover_bucket
+               SET achieved_amount = #{b.achievedAmount}, status = #{b.status}, close_reason = #{b.closeReason},
+                   closed_by = #{b.closedBy}, closed_at = #{b.closedAt}, version = version + 1
+             WHERE id = #{b.id} AND version = #{b.version}
+            """)
+    int updateRevised(@Param("b") TurnoverBucket bucket);
+
     /** Closes ACTIVE buckets of one currency: one bucket when {@code bucketId} is set, else all of them. */
     @Update("""
             <script>

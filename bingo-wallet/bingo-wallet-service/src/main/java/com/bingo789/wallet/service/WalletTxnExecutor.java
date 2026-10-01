@@ -132,6 +132,11 @@ public class WalletTxnExecutor {
         if (!target.getCurrency().equals(c.currency())) {
             throw Rejected.of(WalletResultCode.INVALID_REQUEST, "currency does not match the original transaction");
         }
+        if (reversalType == TxnType.ROLLBACK && target.getRoundId() != null
+                && txnMapper.countLivePayouts(c.userId(), c.providerCode(), target.getRoundId(), targetTxnId) > 0) {
+            // the round already paid this bet: refunding the stake too would pay the player twice
+            throw Rejected.of(WalletResultCode.BET_SETTLED, "bet " + targetTxnId + " is paid out; reverse the payout first");
+        }
         BigDecimal amount = target.getAmount();
         BigDecimal delta;
         int rows;

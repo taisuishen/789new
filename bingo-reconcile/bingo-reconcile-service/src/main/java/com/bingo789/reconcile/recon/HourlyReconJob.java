@@ -2,9 +2,8 @@ package com.bingo789.reconcile.recon;
 
 import com.bingo789.common.core.time.BingoTime;
 import com.bingo789.reconcile.config.ReconcileProperties;
+import com.bingo789.reconcile.dw.ReconcileDw;
 import com.bingo789.reconcile.entity.ReconLevel;
-import com.bingo789.reconcile.mapper.PlatformHourlyMapper;
-import com.bingo789.reconcile.mapper.ProviderHourlyMapper;
 import com.bingo789.reconcile.model.ProviderTotals;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
@@ -21,9 +20,10 @@ import java.util.TreeMap;
 
 /**
  * Layer 1: per provider and currency, net bet and net payout of the ledger vs the provider's bet history for
- * one UTC+8 hour. Job param (optional): the hour to reconcile, ISO local date-time in UTC+8, e.g. 2026-09-30T13:00.
- * Both sides are summed over all user lines: the aggregates are kept per line, but a player migrated between the
- * bet and the provider pull is on different lines on the two sides.
+ * one UTC+8 hour, both summed by StarRocks (wallet_txn / provider_bet, exact under redelivery). Job param
+ * (optional): the hour to reconcile, ISO local date-time in UTC+8, e.g. 2026-09-30T13:00.
+ * Both sides are summed over all user lines: a player migrated between the bet and the provider pull is on
+ * different lines on the two sides.
  * <p>
  * This layer is approximate by design: the ledger buckets by our transaction time, the provider by its bet time,
  * so rounds crossing an hour boundary (and provider clock skew) show up as small opposite diffs in adjacent hours.
@@ -37,8 +37,7 @@ public class HourlyReconJob {
     static final String NET_BET = "NET_BET";
     static final String NET_PAYOUT = "NET_PAYOUT";
 
-    private final PlatformHourlyMapper platformMapper;
-    private final ProviderHourlyMapper providerMapper;
+    private final ReconcileDw dw;
     private final ReconDiffService diffService;
     private final ReconcileProperties properties;
 
@@ -52,10 +51,10 @@ public class HourlyReconJob {
             return;
         }
         Map<String, Totals> byKey = new TreeMap<>();
-        for (ProviderTotals t : platformMapper.sumByProviderCurrency(hour)) {
+        for (ProviderTotals t : dw.platformTotals(hour, hour.plusHours(1))) {
             byKey.computeIfAbsent(key(t), k -> new Totals(t.getProviderCode(), t.getCurrency())).platform = t;
         }
-        for (ProviderTotals t : providerMapper.sumByProviderCurrency(hour)) {
+        for (ProviderTotals t : dw.providerTotals(hour, hour.plusHours(1))) {
             byKey.computeIfAbsent(key(t), k -> new Totals(t.getProviderCode(), t.getCurrency())).provider = t;
         }
 

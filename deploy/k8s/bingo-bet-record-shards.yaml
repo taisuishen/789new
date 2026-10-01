@@ -3,7 +3,7 @@
 # template for bingo-bet-record (env from a ConfigMap is read at pod start).
 #
 # Same user -> logical shard hash as the wallet (1024 logical shards, 64 per database bingo_bet_record_NN, created
-# with deploy/sql/shard_schemas.sh bet_record); BET_RECORD_DB_HOST_NN is the instance of database NN. Several
+# with deploy/shard_schemas.sh bet_record); BET_RECORD_DB_HOST_NN is the instance of database NN. Several
 # databases may share an instance until they are moved (bingo-bet-record-service application-sharding.yml).
 # bet_pull_checkpoint lives on ds00.
 # Each instance: 1 primary + 1 cross-AZ read replica; TaurusDB Serverless works (TCU range per docs/capacity-1m.md).

@@ -1,20 +1,21 @@
-# TEST ENVIRONMENT ONLY: single-node Nacos (standalone mode, embedded storage on an EVS disk) in namespace bingo.
-# Production uses CSE (Nacos engine) or a 3-node cluster (docs/go-live.md).
+# TEST ENVIRONMENT ONLY: single-node Nacos (standalone mode, embedded storage on an EVS disk) in namespace
+# bingo-infra. Production uses CSE (Nacos engine) or a 3-node cluster (docs/go-live.md).
 #
-# - NACOS_ADDR in 02-common-config.yaml: "nacos:8848" (clients also use gRPC on 9848 = 8848 + 1000).
-# - Console: kubectl -n bingo port-forward svc/nacos 18080:8080  ->  http://127.0.0.1:18080
-#   The first visit sets the "nacos" admin password; then create namespace, user bingo-app (read on the namespace)
-#   and import deploy/nacos/*.yaml (Group BINGO).
-# - Secret nacos-secret: NACOS_AUTH_TOKEN (Base64 of >= 32 random bytes), NACOS_AUTH_IDENTITY_KEY,
-#   NACOS_AUTH_IDENTITY_VALUE.
-# - Image: mirror nacos/nacos-server:v3.2.4 into SWR. Runs as root, which the namespace's "baseline" level allows.
+# - NACOS_ADDR in 02-common-config.yaml: "nacos.bingo-infra:8848" (clients also use gRPC on 9848 = 8848 + 1000).
+# - Console: kubectl -n bingo-infra port-forward svc/nacos 18080:8080  ->  http://127.0.0.1:18080
+#   The first visit sets the "nacos" admin password; then create the namespace (e.g. ID "test"), user bingo-app
+#   with READ + WRITE on that namespace (services register instances = write) and import deploy/nacos/*.yaml
+#   (Group BINGO) into it.
+# - Secret nacos-secret (namespace bingo-infra): NACOS_AUTH_TOKEN (Base64 of >= 32 random bytes),
+#   NACOS_AUTH_IDENTITY_KEY, NACOS_AUTH_IDENTITY_VALUE.
+# - Image: mirror nacos/nacos-server:v3.2.4 into SWR. Runs as root, which bingo-infra's "baseline" level allows.
 # Replace __REGISTRY__ before applying.
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: nacos
-  namespace: bingo
+  namespace: bingo-infra
   labels:
     app.kubernetes.io/name: nacos
 spec:
@@ -36,7 +37,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: nacos
-  namespace: bingo
+  namespace: bingo-infra
   labels:
     app.kubernetes.io/name: nacos
 spec:
@@ -50,6 +51,8 @@ spec:
       labels:
         app.kubernetes.io/name: nacos
     spec:
+      imagePullSecrets:
+        - name: default-secret               # SWR pull secret created by CCE in every namespace
       nodeSelector:
         bingo.io/pool: general
       containers:

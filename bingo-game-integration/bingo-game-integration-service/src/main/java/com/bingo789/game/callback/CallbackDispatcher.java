@@ -41,7 +41,7 @@ public class CallbackDispatcher {
         String result = CallbackError.SYSTEM_RETRYABLE.name();
         try (var _ = rateLimiter.acquireProvider(provider.code())) {
             guard.check(provider, request);
-            WalletCommand command = adapter.parse(request);
+            WalletCommand command = adapter.parse(request, provider.client());
             CommandOutcome outcome;
             try (var _ = rateLimiter.acquirePlayer(playerKey(provider, command))) {
                 outcome = walletGateway.execute(provider, command);

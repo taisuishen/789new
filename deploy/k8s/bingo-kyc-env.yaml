@@ -1,0 +1,19 @@
+# bingo-kyc settings loaded by service-template.yaml through the optional ConfigMap <service>-env. Apply BEFORE
+# rendering the template for bingo-kyc (env from a ConfigMap is read at pod start).
+#
+# One region for everything: the OBS endpoint, the SWR registry (Jenkinsfile REGION) and the CCE cluster must all
+# be in the same region, e.g. ap-southeast-1 (Hong Kong) or ap-southeast-3 (Singapore).
+# Bucket: private, default encryption on; test environment bingo-kyc-test, production bingo-kyc (SSE-KMS).
+# Credentials: production uses the node IAM agency (no keys); a test cluster may put OBS_ACCESS_KEY /
+# OBS_SECRET_KEY of a dedicated IAM user (this bucket only) into Secret bingo-kyc-secret (secrets-example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bingo-kyc-env
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-kyc
+    app.kubernetes.io/part-of: bingo
+data:
+  OBS_ENDPOINT: "https://obs.__REGION__.myhuaweicloud.com"
+  OBS_KYC_BUCKET: "__KYC_BUCKET__"

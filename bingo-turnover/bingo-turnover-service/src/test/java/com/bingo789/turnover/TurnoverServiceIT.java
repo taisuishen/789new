@@ -114,6 +114,33 @@ class TurnoverServiceIT {
     }
 
     @Test
+    void aRevisedRoundTakesItsValidBetBackAndReopensWhatItCompleted() {
+        long user = USER_SEQ.incrementAndGet();
+        Instant t0 = Instant.now().minus(Duration.ofHours(1));
+        bucket(user, TurnoverScope.GAME, "PG:fortune-tiger", "G1", "20", t0);
+        bucket(user, TurnoverScope.ALL, null, "A1", "200", t0);
+        Instant betAt = t0.plusSeconds(600);
+        wager.applySettledRounds(List.of(round(user, "r1", "PG", "fortune-tiger", "SLOT", "150", "500", betAt)));
+        assertThat(byScope(user).get("G1").status()).isEqualTo("COMPLETED");
+        assertThat(byScope(user).get("A1").achieved()).isEqualByComparingTo("130");
+
+        // part of the stake rolled back after settlement: 30 of the 150 remain
+        wager.applySettledRounds(List.of(revision(user, "r1", "SETTLED", "30", betAt, 2)));
+        assertThat(byScope(user).get("A1").achieved()).isEqualByComparingTo("10");
+        assertThat(byScope(user).get("G1").status()).isEqualTo("COMPLETED");
+
+        // then the whole round is cancelled; a stale re-send of revision 2 changes nothing
+        wager.applySettledRounds(List.of(revision(user, "r1", "CANCELLED", "0", betAt, 3)));
+        wager.applySettledRounds(List.of(revision(user, "r1", "SETTLED", "30", betAt, 2)));
+        Map<String, BucketView> after = byScope(user);
+        assertThat(after.get("A1").achieved()).isEqualByComparingTo("0");
+        assertThat(after.get("G1").achieved()).isEqualByComparingTo("0");
+        assertThat(after.get("G1").status()).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM turnover_record WHERE user_id = ? AND record_type = 'WAGER'",
+                BigDecimal.class, user)).isEqualByComparingTo("0");
+    }
+
+    @Test
     void playersWithoutBucketsCostNoWrites() {
         long user = USER_SEQ.incrementAndGet();
         wager.applySettledRounds(List.of(round(user, "r1", "PG", "g", "SLOT", "50", "1", Instant.now())));
@@ -130,10 +157,17 @@ class TurnoverServiceIT {
                 .collect(Collectors.toMap(BucketView::sourceNo, b -> b));
     }
 
+    private static RoundSettledEvent revision(long user, String roundId, String status, String validBet, Instant betTime,
+                                              int revision) {
+        return new RoundSettledEvent("PG", roundId, user, 1, CUR, "fortune-tiger", "SLOT", "fortune-tiger",
+                new BigDecimal(validBet), BigDecimal.ZERO, new BigDecimal(validBet), null, status, betTime,
+                betTime.plusSeconds(30), revision);
+    }
+
     private static RoundSettledEvent round(long user, String roundId, String provider, String game, String type,
                                            String validBet, String balanceAfter, Instant betTime) {
         return new RoundSettledEvent(provider, roundId, user, 1, CUR, game, type, game, new BigDecimal(validBet),
                 BigDecimal.ZERO, new BigDecimal(validBet), new BigDecimal(balanceAfter), "SETTLED", betTime,
-                betTime.plusSeconds(30));
+                betTime.plusSeconds(30), 1);
     }
 }

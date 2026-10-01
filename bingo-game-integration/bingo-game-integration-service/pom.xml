@@ -76,6 +76,11 @@
             <artifactId>resilience4j-circuitbreaker</artifactId>
         </dependency>
         <dependency>
+            <!-- GameSessions: verified game tokens of token-per-call providers -->
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-bulkhead</artifactId>
         </dependency>

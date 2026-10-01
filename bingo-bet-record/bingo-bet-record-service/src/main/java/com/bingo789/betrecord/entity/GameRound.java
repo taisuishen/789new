@@ -51,8 +51,10 @@ public class GameRound {
     private Integer resolveAttempts;
     /** Last outcome reported by the provider resolver (RoundResolutionView.outcome). */
     private String resolveOutcome;
-    /** RoundSettledEvent acknowledged by Kafka. */
+    /** RoundSettledEvent of the current revision acknowledged by Kafka. */
     private Boolean eventPublished;
+    /** 0 while OPEN, 1 when closed, +1 for every later change of a closed round (RoundSettledEvent.revision). */
+    private Integer revision;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

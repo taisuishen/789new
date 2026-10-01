@@ -26,6 +26,8 @@ public record CommandOutcome(
         PLAYER_LOCKED,
         BET_NOT_FOUND,
         TXN_CANCELLED,
+        /** Rollback of a bet that is already paid out (reverse the payout first); nothing was changed. */
+        BET_SETTLED,
         TXN_NOT_FOUND,
         INVALID_REQUEST
     }

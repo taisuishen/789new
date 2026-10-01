@@ -30,6 +30,8 @@ public class TurnoverRecord {
     private String reason;
     private String operator;
     private String roundKey;
+    /** WAGER only: the round revision that produced the row (1 = first settlement). */
+    private Integer roundRevision;
     private Integer seq;
     private String providerCode;
     private String gameCode;

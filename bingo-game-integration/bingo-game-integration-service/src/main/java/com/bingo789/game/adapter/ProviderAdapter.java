@@ -33,7 +33,11 @@ public interface ProviderAdapter {
 
     // ---------------------------------------------------------------- inbound (seamless wallet callbacks)
 
-    /** Verifies the signature over the raw request; throws {@code CallbackException.auth(...)} on mismatch. */
+    /**
+     * Verifies the signature over the raw request; throws {@code CallbackException.auth(...)} on mismatch.
+     * Protocols whose body is ENCRYPTED with a shared key authenticate by decrypting it: they do that (and any
+     * timestamp check inside the ciphertext) in {@link #parse}, and leave this method empty.
+     */
     void verifySignature(CallbackRequest request, ProviderClient client);
 
     /** Timestamp covered by the signature, for replay protection; null when the protocol has none. */
@@ -41,8 +45,13 @@ public interface ProviderAdapter {
         return null;
     }
 
-    /** Translates the provider message into the unified command; throws {@code CallbackException} for bad input. */
-    WalletCommand parse(CallbackRequest request);
+    /**
+     * Translates the provider message into the unified command; throws {@code CallbackException} for bad input
+     * ({@code CallbackException.auth} when an encrypted body does not decrypt). Providers that identify the player by
+     * the launch token on every call return a {@link WalletCommand.Session}; several wallet operations in one call are
+     * a {@link WalletCommand.Batch}; calls that move no money are a {@link WalletCommand.Ack}.
+     */
+    WalletCommand parse(CallbackRequest request, ProviderClient client);
 
     /** Renders a business outcome exactly as this provider's spec requires (including duplicates = success). */
     CallbackResponse render(CallbackRequest request, WalletCommand command, CommandOutcome outcome, ProviderClient client);

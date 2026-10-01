@@ -12,7 +12,8 @@
 #   (needs BuildKit - the default builder since Docker 23 - which skips the unused otel-true stage,
 #    so the missing jar is never read).
 #
-# JVM tuning at deploy time: set JDK_JAVA_OPTIONS (replaces the GC default below, e.g. "-XX:+UseZGC").
+# JVM tuning at deploy time: set JDK_JAVA_OPTIONS (replaces BOTH defaults below, so repeat what you keep, e.g.
+# "-XX:+UseG1GC -XX:MaxRAMPercentage=60" for the 1.5 GiB pods of the test environment).
 # Do not overwrite JAVA_TOOL_OPTIONS unless you keep the -javaagent flag in it.
 
 ARG OTEL_AGENT=true
@@ -23,11 +24,12 @@ RUN groupadd --system --gid 10001 bingo \
  && useradd --system --uid 10001 --gid bingo --home-dir /app --no-create-home --shell /usr/sbin/nologin bingo \
  && mkdir -p /app /data/applogs \
  && chown 10001:10001 /data/applogs
-# G1 explicitly: with < 2 CPUs or < 1792 MB the JVM would otherwise pick SerialGC.
+# G1 explicitly: with < 2 CPUs or < 1792 MB the JVM would otherwise pick SerialGC. Heap = 75% of the memory limit
+# (6 GiB of an 8 GiB pod); small pods need a lower share for metaspace, threads and the OTel agent.
 # Platform time zone is UTC+8 everywhere (Asia/Manila has no DST). The services also pin it in main()
 # via BingoTime.applyJvmDefault(), so a missing TZ can never silently shift DATETIME values.
 ENV TZ=Asia/Manila \
-    JDK_JAVA_OPTIONS="-XX:+UseG1GC"
+    JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0"
 WORKDIR /app
 
 FROM base AS otel-true
@@ -46,4 +48,6 @@ RUN test -n "${JAR}" || (echo "missing --build-arg JAR=<module>/target/<artifact
 COPY ${JAR} /app/app.jar
 USER 10001:10001
 # Logs go to stdout only (collected by Huawei LTS); no log files inside the container.
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]
+# The root filesystem is read-only in Kubernetes and only /tmp is writable: user.home=/tmp gives the Nacos client
+# a place for its local config / service snapshots (${user.home}/nacos) and its log files.
+ENTRYPOINT ["java", "-Duser.home=/tmp", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]

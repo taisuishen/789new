@@ -1,8 +1,8 @@
 # bingo-game-integration - serves provider callbacks /callback/{provider}/{action} (bet, payout, rollback, ...).
 #
 # Sizing for 1,000,000 concurrent players (docs/capacity-1m.md; estimates until confirmed by load tests):
-#   ~250k callback QPS at peak (design 400k) -> ~100 pods at peak, HPA 20..160, 4 vCPU / 8 GiB each, on the
-#   dedicated callback node pool. Scaling: HPA on CPU (50%) + CCE CronHPA pre-warming for known peaks; the
+#   ~250k callback QPS at peak (design 400k) -> ~100 pods at peak, 20..160 pods, 4 vCPU / 8 GiB each, on the
+#   dedicated callback node pool. Scaling: KEDA (autoscaling.yaml) on CPU (50%) + an evening floor; the
 #   cluster autoscaler adds callback nodes.
 #
 # Physically isolated from player traffic so a player-side spike or attack never affects in-flight bets/payouts:
@@ -68,7 +68,9 @@ metadata:
     app.kubernetes.io/part-of: bingo
 spec:
   serviceName: bingo-game-integration-headless
-  # replicas is owned by the HPA (minReplicas 20); not set here so a re-apply never shrinks a scaled-out tier.
+  # replicas is owned by KEDA (autoscaling.yaml); not set here so a re-apply never shrinks a scaled-out tier.
+  # The callback node pool must be able to grow to the stage's maxReplicaCount (1M: 160 pods / 6 per 32-vCPU
+  # node = 27 nodes, docs/capacity-1m.md).
   podManagementPolicy: Parallel
   updateStrategy:
     type: RollingUpdate
@@ -89,6 +91,9 @@ spec:
         prometheus.io/path: /actuator/prometheus
     spec:
       priorityClassName: bingo-critical
+      # SWR pull secret that CCE creates in every namespace (verify: kubectl -n bingo get secret default-secret)
+      imagePullSecrets:
+        - name: default-secret
       automountServiceAccountToken: false
       enableServiceLinks: false
       # Callback node pool only - never the general pool.
@@ -166,8 +171,6 @@ spec:
             # 3,200 connections at maxReplicas). Environment variables override application.yml and Nacos config.
             - name: SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE
               value: "4"
-            - name: XXL_JOB_EXECUTOR_PORT
-              value: "9103"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -205,8 +208,9 @@ spec:
             failureThreshold: 2
           lifecycle:
             preStop:
+              # marker: de-register from Nacos first (RegistryDrain), keep serving while callers drop this pod
               exec:
-                command: ["sh", "-c", "sleep 15"]
+                command: ["sh", "-c", "touch /tmp/draining; sleep 15"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -224,47 +228,6 @@ spec:
         - name: applogs
           emptyDir:
             sizeLimit: 1Gi
----
-# The HPA sets the replica count; CronHPA (autoscaling-cronhpa.yaml) only moves minReplicas at known peaks.
-# The callback node pool must be able to grow to maxReplicas: 160 pods / 6 pods per 32-vCPU node
-# = 27 nodes (docs/capacity-1m.md).
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: bingo-game-integration
-  namespace: bingo
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: StatefulSet
-    name: bingo-game-integration
-  minReplicas: 20                    # off-peak baseline (~1/5 of peak)
-  maxReplicas: 160                   # design capacity 400k callback QPS (~2.5k QPS per pod at 50% CPU)
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 50
-  behavior:
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      selectPolicy: Max
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 15
-        - type: Pods
-          value: 10
-          periodSeconds: 15
-    scaleDown:
-      stabilizationWindowSeconds: 600
-      selectPolicy: Min
-      policies:
-        - type: Percent
-          value: 10
-          periodSeconds: 60
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

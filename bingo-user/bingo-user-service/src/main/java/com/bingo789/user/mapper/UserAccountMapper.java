@@ -19,13 +19,13 @@ public interface UserAccountMapper extends BaseMapper<UserAccount> {
 
     /** Players already holding any of the unique identities (at most one row per unique key; shadows excluded). */
     @Select("""
-            SELECT id, username, email, phone FROM user_account
-             WHERE player_username = #{username} OR player_email = #{email} OR player_phone = #{phone}
+            SELECT id, username, email_hash, phone_hash FROM user_account
+             WHERE player_username = #{username} OR player_email_hash = #{emailHash} OR player_phone_hash = #{phoneHash}
              LIMIT 3
             """)
     List<UserAccount> selectConflicts(@Param("username") String username,
-                                      @Param("email") String email,
-                                      @Param("phone") String phone);
+                                      @Param("emailHash") String emailHash,
+                                      @Param("phoneHash") String phoneHash);
 
     @Select("SELECT user_line FROM user_account WHERE id = #{id}")
     Integer selectUserLine(@Param("id") long id);

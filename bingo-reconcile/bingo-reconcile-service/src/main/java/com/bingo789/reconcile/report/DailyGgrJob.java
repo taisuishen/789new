@@ -11,9 +11,9 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 
 /**
- * Builds ggr_daily (GGR = net bet - net payout) for one reporting day from recon_platform_hourly.
+ * Builds ggr_daily (GGR = net bet - net payout) for one reporting day from StarRocks wallet_txn.
  * Job param (optional): yyyy-MM-dd; default yesterday in the reporting zone. Schedule it a few hours after
- * midnight of the reporting zone so the last hours' ledger events have been aggregated.
+ * midnight of the reporting zone so the last hours' ledger events have been loaded (Routine Load lag: seconds).
  */
 @Slf4j
 @Component

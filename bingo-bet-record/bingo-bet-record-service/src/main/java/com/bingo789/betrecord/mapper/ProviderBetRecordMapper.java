@@ -32,15 +32,21 @@ public interface ProviderBetRecordMapper extends BaseMapper<ProviderBetRecord> {
                #{r.betTime}, #{r.settleTime}, 0)
             </foreach>
             AS new
-            ON DUPLICATE KEY UPDATE payout_amount = new.payout_amount, status = new.status, settle_time = new.settle_time
+            ON DUPLICATE KEY UPDATE
+                published = IF(provider_bet_record.bet_amount <> new.bet_amount
+                               OR provider_bet_record.payout_amount <> new.payout_amount
+                               OR provider_bet_record.status <> new.status
+                               OR NOT (provider_bet_record.settle_time <=> new.settle_time), 0, provider_bet_record.published),
+                bet_amount = new.bet_amount, payout_amount = new.payout_amount, status = new.status,
+                settle_time = new.settle_time
             </script>
             """)
     int upsertBatch(@Param("rows") List<ProviderBetRecord> rows);
 
-    /** Already stored records of a page: provider_bet_id, user_line and published only. */
+    /** Already stored records of a page: what the upsert keeps (line, published) and what a re-pull may change. */
     @Select("""
             <script>
-            SELECT provider_bet_id, user_line, published FROM provider_bet_record
+            SELECT provider_bet_id, user_line, published, bet_amount, payout_amount, status, settle_time FROM provider_bet_record
              WHERE provider_code = #{providerCode} AND bet_time BETWEEN #{from} AND #{to}
                AND provider_bet_id IN
                <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>

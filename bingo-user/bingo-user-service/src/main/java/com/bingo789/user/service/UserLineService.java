@@ -93,8 +93,11 @@ public class UserLineService {
         UserAccount shadow = new UserAccount();
         shadow.setUsername(player.getUsername());
         shadow.setPasswordHash(UNUSABLE_PASSWORD);
+        // ciphertext and blind indexes copied as they are (no decryption); shadows are outside the unique keys
         shadow.setEmail(player.getEmail());
+        shadow.setEmailHash(player.getEmailHash());
         shadow.setPhone(player.getPhone());
+        shadow.setPhoneHash(player.getPhoneHash());
         shadow.setDateOfBirth(player.getDateOfBirth());
         shadow.setCountryCode(player.getCountryCode());
         shadow.setDefaultCurrency(player.getDefaultCurrency());

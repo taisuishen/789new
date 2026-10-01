@@ -1,0 +1,32 @@
+# PRODUCTION: switches a workload to DEW secrets (dew-secrets.yaml). Apply once per workload after its manifest,
+# rendered with the service name and its kind:
+#   sed 's/__SERVICE__/bingo-wallet/g' dew-patch.yaml > /tmp/p.yaml
+#   kubectl -n bingo patch statefulset bingo-wallet --patch-file /tmp/p.yaml     # bingo-gateway: deployment
+# The patch is a strategic merge: re-applying the base manifest later keeps these fields. It triggers one rolling
+# restart. The test environment does not use it (plain Kubernetes Secrets, no CSI driver on the nodes).
+spec:
+  template:
+    spec:
+      serviceAccountName: __SERVICE__
+      volumes:
+        - name: dew-common
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: bingo-common
+        - name: dew
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: __SERVICE__
+      containers:
+        - name: app
+          volumeMounts:
+            - name: dew-common
+              mountPath: /mnt/csms-common
+              readOnly: true
+            - name: dew                        # SecretRefs default mount path (dew:csms/<name> -> /mnt/csms/<name>)
+              mountPath: /mnt/csms
+              readOnly: true

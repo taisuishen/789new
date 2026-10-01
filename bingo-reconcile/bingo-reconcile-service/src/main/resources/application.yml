@@ -45,8 +45,8 @@ spring:
             connect-timeout: 500
             read-timeout: 3000
   datasource:
-    # Reports and back-office reads go to TaurusDB read replicas; the Kafka aggregation transaction is pinned to
-    # the primary (MasterRoute) because it reads its stored offsets FOR UPDATE.
+    # bingo_reconcile: results only (recon_diff, ggr_daily, provider_settlement, rtp_alert); the figures come from
+    # StarRocks (bingo.reconcile.dw).
     url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/bingo_reconcile?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=1000&socketTimeout=60000&cachePrepStmts=true&useServerPrepStmts=false
     username: ${DB_USER:bingo}
     password: ${DB_PASSWORD:bingo}
@@ -59,19 +59,6 @@ spring:
       keepalive-time: 30000
       max-lifetime: 600000
       transaction-isolation: TRANSACTION_READ_COMMITTED
-  kafka:
-    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
-    consumer:
-      # Offsets that matter live in kafka_offset (same transaction as the aggregates); Kafka's commits are a hint.
-      auto-offset-reset: earliest
-      enable-auto-commit: false
-      max-poll-records: 2000
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      properties:
-        # bigger fetches = bigger batches = fewer upserts on the (hot) aggregate rows
-        fetch.min.bytes: 65536
-        fetch.max.wait.ms: 500
 
 mybatis-plus:
   configuration:
@@ -87,7 +74,11 @@ bingo:
   mybatis:
     worker-id: ${WORKER_ID:-1}
   reconcile:
-    consumer-concurrency: 3
+    # StarRocks FE (MySQL protocol, port 9030), read-only account (DW_USER / DW_PASSWORD from Secret bingo-reconcile-secret)
+    dw:
+      url: jdbc:mysql://${DW_HOST:127.0.0.1}:${DW_PORT:9030}/bingo_dw?useUnicode=true&characterEncoding=utf8&connectTimeout=3000&socketTimeout=600000
+      username: ${DW_USER:report_ro}
+      password: ${DW_PASSWORD:}
     tolerance: 0
     hourly-lag: 2h
     # Regulatory reporting day for GGR and settlements (platform standard UTC+8; whole-hour offsets only).

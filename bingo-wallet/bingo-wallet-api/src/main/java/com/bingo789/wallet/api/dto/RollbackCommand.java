@@ -11,7 +11,8 @@ import jakarta.validation.constraints.NotNull;
  *   tombstone is written, and the late bet will be rejected with BET_CANCELLED.</li>
  *   <li>Without {@code targetTxnId}: reverse every live bet of {@code roundId}.</li>
  * </ul>
- * A target is reversed at most once, whatever the number of distinct rollback requests.
+ * A target is reversed at most once, whatever the number of distinct rollback requests. A bet whose round already
+ * paid it out is refused with BET_SETTLED: to void a settled round, reverse the payout first, then the bet.
  *
  * @param rollbackTxnId the provider's id of this rollback request (stored for audit)
  * @param targetType    BET (default) or one of the payout types

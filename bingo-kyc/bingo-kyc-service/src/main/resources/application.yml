@@ -76,6 +76,15 @@ xxl:
       port: 9111
 
 bingo:
+  # Field-level encryption of personal data (PiiCipher). Keys are DEW/CSMS secrets; without the DEW mount SecretRefs reads
+  # the environment variable of the same name (BINGO_PII_KEY_K1 = Base64 of 32 random bytes, BINGO_PII_INDEX_KEY >= 32
+  # characters). Rotation: add k2, set current-key k2, keep k1 for reading. The index key is never rotated.
+  pii:
+    keys:
+      k1: dew:csms/bingo-pii-key-k1
+    current-key: k1
+    index-key: dew:csms/bingo-pii-index-key
+    secrets-path: ${BINGO_SECRETS_PATH:/mnt/csms}
   mybatis:
     worker-id: ${WORKER_ID:-1}
   secrets:
@@ -83,9 +92,11 @@ bingo:
     mount-path: ${BINGO_SECRETS_PATH:/mnt/csms}
   obs:
     enabled: ${OBS_ENABLED:true}
-    endpoint: ${OBS_ENDPOINT:https://obs.ap-southeast-3.myhuaweicloud.com}
+    # No defaults: the region must be the one of the cluster (ConfigMap bingo-kyc-env, deploy/k8s/bingo-kyc-env.yaml);
+    # the service refuses to start without both.
+    endpoint: ${OBS_ENDPOINT:}
     # PRIVATE bucket for identity documents (no public read, no CDN): the worker and the back office get signed URLs
-    bucket: ${OBS_KYC_BUCKET:bingo-kyc}
+    bucket: ${OBS_KYC_BUCKET:}
     # empty on CCE = node IAM agency; otherwise dew:csms/<name> references
     access-key: ${OBS_ACCESS_KEY:}
     secret-key: ${OBS_SECRET_KEY:}

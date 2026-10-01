@@ -9,16 +9,16 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 
 /**
- * Reconciliation and reporting.
+ * Reconciliation and reporting. Every figure comes from StarRocks (ReconcileDw), which loads the Kafka streams into
+ * Primary Key tables (exact sums under at-least-once delivery); this service consumes no Kafka itself.
  * <ul>
- *   <li>Layer 1 (hourly, approximate): ledger aggregates (recon_platform_hourly, fed by bingo.wallet.txn) vs
- *   provider aggregates (recon_provider_hourly, fed by bingo.provider.bet) per provider and currency.</li>
- *   <li>Layer 2 (daily, authoritative): per-record matching in StarRocks, auto-compensation of known
- *   patterns, tickets (recon_diff) for everything else.</li>
- *   <li>Reporting: GGR per day, provider revenue-share settlement, RTP monitoring.</li>
+ *   <li>Layer 1 (hourly, approximate): ledger (wallet_txn) vs provider bet history (provider_bet) per provider and
+ *   currency.</li>
+ *   <li>Layer 2 (daily, authoritative): per-record matching of rounds, auto-compensation of known patterns,
+ *   tickets (recon_diff) for everything else.</li>
+ *   <li>Reporting: GGR per day (ggr_daily), provider revenue-share settlement, RTP monitoring.</li>
  * </ul>
- * Platform aggregate accounts (platform totals, agent totals, GGR) are computed here, asynchronously and in
- * batches. They are never updated per wallet transaction: a shared total row touched by every bet would be a
+ * Platform totals are never updated per wallet transaction: a shared total row touched by every bet would be a
  * global hot row serializing the whole wallet.
  */
 @SpringBootApplication

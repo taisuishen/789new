@@ -296,7 +296,7 @@ class PromotionServiceIT {
         Instant settledAt = DAY.atTime(hour, 0).toInstant(BingoTime.ZONE);
         BigDecimal amount = new BigDecimal(validBet);
         return new RoundSettledEvent(provider, roundId, userId, line, "PHP", "bingo-90", "BINGO", "Bingo 90", amount,
-                BigDecimal.ZERO, amount, null, "SETTLED", settledAt.minusSeconds(30), settledAt);
+                BigDecimal.ZERO, amount, null, "SETTLED", settledAt.minusSeconds(30), settledAt, 1);
     }
 
     private static DepositSucceededEvent deposit(String orderNo, long userId, int line, String amount) {

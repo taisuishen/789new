@@ -32,6 +32,18 @@ public interface WalletTxnMapper extends BaseMapper<WalletTxn> {
     List<WalletTxn> findBetsInRound(@Param("userId") long userId, @Param("providerCode") String providerCode,
                                     @Param("roundId") String roundId);
 
+    /**
+     * Live (not reversed) PAYOUT rows of the round that settle this bet: the ones referencing it, or referencing no
+     * specific bet. Stakeless payout types (free spins, jackpots, promotions) do not settle a stake.
+     */
+    @Select("SELECT COUNT(*) FROM wallet_txn p WHERE p.user_id = #{userId} AND p.provider_code = #{providerCode} "
+            + "AND p.round_id = #{roundId} AND p.txn_type = 'PAYOUT' AND p.status = 1 "
+            + "AND (p.ref_txn_id IS NULL OR p.ref_txn_id = #{betTxnId}) "
+            + "AND NOT EXISTS (SELECT 1 FROM wallet_txn r WHERE r.provider_code = p.provider_code "
+            + "AND r.provider_txn_id = p.provider_txn_id AND r.txn_type = 'PAYOUT_REVERSAL' AND r.user_id = p.user_id)")
+    int countLivePayouts(@Param("userId") long userId, @Param("providerCode") String providerCode,
+                         @Param("roundId") String roundId, @Param("betTxnId") String betTxnId);
+
     /** A player's history without tombstones, newest first (idx_user_created); run it inside ReplicaRoute. */
     @Select("<script>SELECT " + COLUMNS + " FROM wallet_txn"
             + " WHERE user_id = #{userId} AND status = 1 AND created_at &gt;= #{from} AND created_at &lt; #{to}"

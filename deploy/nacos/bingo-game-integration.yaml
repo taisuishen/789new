@@ -1,14 +1,15 @@
 # Nacos: Data ID = bingo-game-integration.yaml, Group = BINGO, format = YAML.
 # Provider (game studio / aggregator) integration settings, bound by bingo-game-integration.
-# Changing a provider here takes effect without redeploying; secrets are never stored in clear text.
+# Provider runtimes are built at startup: a change here takes effect after a rolling restart of bingo-game-integration.
+# Secrets are never stored in clear text (dew:csms/<name> references).
 
 bingo:
   callback:
-    # Applied to /callback/{provider}/{action} before any wallet call. The ELB/WAF whitelist and the
+    # Applied to /callback/{provider}/** before any wallet call. The ELB/WAF whitelist and the
     # per-provider ip-whitelist below are enforced in addition (defence in depth).
     rate-limit:
       per-provider-qps: 5000
-      per-user-qps: 30
+      per-player-qps: 30
   providers:
     DEMO:
       enabled: true
@@ -26,3 +27,121 @@ bingo:
       connect-timeout: 1s
       read-timeout: 5s
       circuit-breaker: { failure-rate-threshold: 50, slow-call-duration: 3s, wait-in-open-state: 30s }
+
+    # ---------------------------------------------------------------------------------------------------------
+    # Real providers: adapter class Javadoc = protocol + every key it reads (com.bingo789.game.adapter.<code>).
+    # Callback URL to give the provider: https://<callback-domain>/callback/<CODE>/  (+ their method paths).
+    # A second merchant account of the same provider = another code with "adapter: <CODE>" and its own keys.
+    # Before enabling a provider: its longest retry / late-rollback / re-settlement window must be <= the
+    # wallet's idempotency window (bingo.wallet.retention.keep, 30d).
+    PP:
+      enabled: false
+      base-url: https://api.prerelease-env.biz        # casino API host of the PP environment
+      operator-id: __PP_SECURE_LOGIN__                # secureLogin
+      secret: dew:csms/bingo-provider-pp-secret       # secret key (hash + DataFeeds password)
+      ip-whitelist: []                                # PP callback IPs
+      currencies: [PHP]
+      require-bet-for-payout: true
+      settings:
+        feedDomains: __PP_FEED_DOMAINS__              # DataFeeds API domains, comma-separated (one per environment)
+        # cashierUrl: https://<player-domain>/deposit
+
+    # The others (all disabled until the contract, keys and IP list are in place). Every secret is a dew:csms/ reference;
+    # base-url, operator-id and settings come from the provider's integration document.
+    CQ9:
+      enabled: false
+      base-url: __CQ9_API_HOST__
+      secret: dew:csms/bingo-provider-cq9-wtoken      # callback wtoken
+      secrets: { apiToken: dew:csms/bingo-provider-cq9-api-token }
+      currencies: [PHP]                               # callbacks carry no currency
+      ip-whitelist: []
+    EVO:
+      enabled: false
+      base-url: __EVO_API_HOST__
+      operator-id: __EVO_CASINO_ID__
+      secret: dew:csms/bingo-provider-evo-auth-token  # callback authToken
+      secrets:
+        ua2Token: dew:csms/bingo-provider-evo-ua2-token
+        gameHistoryToken: dew:csms/bingo-provider-evo-history-token
+        lobbyToken: dew:csms/bingo-provider-evo-lobby-token
+      settings: { skin: "1" }                         # gameHost defaults to base-url
+      currencies: [PHP]
+      require-bet-for-payout: true
+      ip-whitelist: []
+    FC:
+      enabled: false
+      base-url: __FC_API_URL__
+      operator-id: __FC_AGENT_CODE__
+      secret: dew:csms/bingo-provider-fc-agent-key    # AES key (16/24/32 bytes)
+      currencies: [PHP]
+      ip-whitelist: []
+    JDB:
+      enabled: false
+      base-url: __JDB_API_URL__
+      operator-id: __JDB_PARENT__
+      secret: dew:csms/bingo-provider-jdb-key         # AES key
+      secrets: { iv: dew:csms/bingo-provider-jdb-iv }
+      settings: { dc: __JDB_DC__ }
+      currencies: [PHP]
+      ip-whitelist: []
+    JILI:
+      enabled: false
+      base-url: __JILI_API_DOMAIN__
+      operator-id: __JILI_AGENT_ID__
+      secret: dew:csms/bingo-provider-jili-agent-key
+      currencies: [PHP]
+      # settings: { trialUrl: https://... }            # demo play
+      ip-whitelist: []
+    OP:
+      enabled: false
+      base-url: __OP_API_HOST__
+      operator-id: __OP_PARENT__
+      secrets:
+        aesKey: dew:csms/bingo-provider-op-aes-key
+        aesIv: dew:csms/bingo-provider-op-aes-iv
+      settings: { dc: __OP_DC__, gType: "1" }
+      currencies: [PHP]
+      timestamp-tolerance: 30s
+      require-bet-for-payout: false                   # OP retries a refused result forever
+      balance-scale: 4
+      ip-whitelist: []
+    PG:
+      enabled: false
+      base-url: __PG_API_DOMAIN__                     # e.g. https://api.pg-bo.me/external
+      operator-id: __PG_OPERATOR_TOKEN__
+      secret: dew:csms/bingo-provider-pg-secret-key
+      settings: { historyUrl: __PG_HISTORY_DOMAIN__, launchUrl: __PG_GAME_DOMAIN__ }
+      currencies: [PHP]
+      ip-whitelist: []
+    PS:
+      enabled: false
+      base-url: __PS_API_HOST__
+      operator-id: __PS_HOST_ID_PHP__                 # host_id; one provider code per currency
+      currencies: [PHP]
+      ip-whitelist: []                                # PS signs nothing: the IP list and the game token are the auth
+    SA:
+      enabled: false
+      base-url: __SA_API_URL__
+      secret: dew:csms/bingo-provider-sa-encrypt-key  # DES EncryptKey
+      secrets:
+        md5Key: dew:csms/bingo-provider-sa-md5-key
+        secretKey: dew:csms/bingo-provider-sa-secret-key
+      settings: { launchUrl: __SA_CLIENT_URL__, lobbyCode: __SA_LOBBY__ }
+      currencies: [PHP]
+      ip-whitelist: []
+    WE:
+      enabled: false
+      base-url: __WE_API_HOST__
+      operator-id: __WE_OPERATOR_ID__
+      secret: dew:csms/bingo-provider-we-app-secret
+      currencies: [PHP]
+      ip-whitelist: []
+    YGR:
+      enabled: false
+      base-url: __YGR_USER_API_URL__
+      operator-id: __YGR_AGENT_ID__                   # e.g. 789_BETBINGO_PHP
+      secret: dew:csms/bingo-provider-ygr-authorization
+      secrets: { agentKey: dew:csms/bingo-provider-ygr-agent-key }
+      settings: { manageApiUrl: __YGR_MANAGE_API_URL__ }
+      currencies: [PHP]
+      ip-whitelist: []

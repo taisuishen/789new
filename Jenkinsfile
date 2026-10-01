@@ -28,6 +28,12 @@ def workloadOf(String service) {
     service == 'bingo-gateway' ? "deployment/${service}" : "statefulset/${service}"
 }
 
+def rolloutMinutes(String service) {
+    // Without the MaxUnavailableStatefulSet feature gate a StatefulSet replaces one pod at a time: ~2 hours for the
+    // 100-pod wallet / callback tiers at the 1M stage (bingo-wallet.yaml). Everything else rolls in minutes.
+    service in ['bingo-wallet', 'bingo-game-integration'] ? 180 : 20
+}
+
 pipeline {
     agent { label 'docker' }
 
@@ -35,7 +41,7 @@ pipeline {
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '30'))
-        timeout(time: 90, unit: 'MINUTES')
+        timeout(time: 6, unit: 'HOURS')      // covers the wallet + callback rollouts at the 1M stage
     }
 
     parameters {
@@ -49,8 +55,11 @@ pipeline {
     }
 
     environment {
+        // ONE region for everything: SWR, CCE and OBS (deploy/k8s/bingo-kyc-env.yaml) - ap-southeast-1 Hong Kong or
+        // ap-southeast-3 Singapore. Changing it later means re-pushing every image.
+        REGION = 'ap-southeast-1'
         // swr.<region>.myhuaweicloud.com/<organisation>
-        REGISTRY = 'swr.ap-southeast-1.myhuaweicloud.com/bingo'
+        REGISTRY = "swr.${REGION}.myhuaweicloud.com/bingo"
         MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-25'
         OTEL_AGENT_VERSION = '2.31.1'
     }
@@ -121,7 +130,7 @@ pipeline {
                             // container name "app" in every bingo manifest
                             sh """
                                 kubectl -n bingo set image ${workloadOf(service)} app="\$REGISTRY/${service}:\$TAG"
-                                kubectl -n bingo rollout status ${workloadOf(service)} --timeout=15m
+                                kubectl -n bingo rollout status ${workloadOf(service)} --timeout=${rolloutMinutes(service)}m
                             """
                         }
                     }

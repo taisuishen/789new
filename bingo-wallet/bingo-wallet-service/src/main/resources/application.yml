@@ -75,8 +75,9 @@ bingo:
       after-commit-publish: ${WALLET_AFTER_COMMIT_PUBLISH:false}
     # walletTxnRetentionJob: wallet_txn keeps the idempotency window only; history is in StarRocks (Routine Load from
     # bingo.wallet.txn). Schedule the job only once that load is running.
+    # keep >= the longest provider window for retries / late rollbacks / re-settlements + margin (WalletProperties).
     retention:
-      keep: 7d
+      keep: 30d
       batch-size: 2000
       pause-between-batches: 50ms
       max-run-time: 30m
@@ -88,7 +89,7 @@ xxl:
     access-token: ${XXL_JOB_TOKEN:}
     executor:
       appname: ${spring.application.name}
-      port: ${XXL_JOB_EXECUTOR_PORT:9102}
+      port: 9102
 
 management:
   endpoints:

@@ -3,6 +3,7 @@ package com.bingo789.promotion.service;
 import com.bingo789.common.core.time.BingoTime;
 import com.bingo789.common.mq.event.RoundSettledEvent;
 import com.bingo789.promotion.PromotionFixtures;
+import com.bingo789.promotion.domain.PromotionRoundApplied;
 import com.bingo789.promotion.domain.ValidBetDaily;
 import com.bingo789.promotion.mapper.PromotionRoundAppliedMapper;
 import com.bingo789.promotion.mapper.ValidBetDailyMapper;
@@ -17,8 +18,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ValidBetServiceTest {
@@ -26,6 +34,7 @@ class ValidBetServiceTest {
     private static final LocalDate DAY = LocalDate.of(2026, 9, 29);
 
     private ValidBetDailyMapper validBetMapper;
+    private PromotionRoundAppliedMapper appliedMapper;
     private ValidBetService service;
     private final List<ValidBetDaily> upserted = new ArrayList<>();
 
@@ -37,8 +46,9 @@ class ValidBetServiceTest {
             upserted.addAll(rows);
             return rows.size();
         });
-        service = new ValidBetService(validBetMapper, mock(PromotionRoundAppliedMapper.class),
-                InlineTransactions.template(), PromotionFixtures.properties(false));
+        appliedMapper = mock(PromotionRoundAppliedMapper.class);
+        service = new ValidBetService(validBetMapper, appliedMapper, InlineTransactions.template(),
+                PromotionFixtures.properties(false));
     }
 
     @Test
@@ -61,6 +71,25 @@ class ValidBetServiceTest {
     }
 
     @Test
+    void aLaterRevisionAddsTheDifferenceAndAnOlderOneIsIgnored() {
+        when(appliedMapper.selectExisting(anyCollection())).thenReturn(List.of(
+                new PromotionRoundApplied("DEMO:r1:7", 1, new BigDecimal("10")),
+                new PromotionRoundApplied("DEMO:r2:7", 3, new BigDecimal("20"))));
+        when(appliedMapper.updateRevision(anyString(), anyInt(), any(), anyInt())).thenReturn(1);
+
+        service.applySettledRounds(List.of(
+                // r1 cancelled after it was counted: -10 and one round less
+                revision("r1", "CANCELLED", "0", 2),
+                // r2 already at revision 3: a re-sent revision 2 changes nothing
+                revision("r2", "SETTLED", "5", 2)));
+
+        assertThat(row(DAY, 7, "DEMO").getValidBet()).isEqualByComparingTo("-10");
+        assertThat(row(DAY, 7, "DEMO").getRoundCount()).isEqualTo(-1);
+        verify(appliedMapper).updateRevision("DEMO:r1:7", 2, BigDecimal.ZERO, 1);
+        verify(appliedMapper, never()).updateRevision(eq("DEMO:r2:7"), anyInt(), any(), anyInt());
+    }
+
+    @Test
     void aRoundWithoutALineIsOnTheDefaultLine() {
         service.applySettledRounds(List.of(round("DEMO", "r1", 7, null, "10", at(DAY, 10))));
 
@@ -71,7 +100,14 @@ class ValidBetServiceTest {
                                            Instant settledAt) {
         BigDecimal amount = new BigDecimal(validBet);
         return new RoundSettledEvent(provider, roundId, userId, line, "PHP", "game-1", "SLOT", "Game 1", amount,
-                BigDecimal.ZERO, amount, null, "SETTLED", settledAt.minusSeconds(30), settledAt);
+                BigDecimal.ZERO, amount, null, "SETTLED", settledAt.minusSeconds(30), settledAt, 1);
+    }
+
+    private static RoundSettledEvent revision(String roundId, String status, String validBet, int revision) {
+        BigDecimal amount = new BigDecimal(validBet);
+        Instant settledAt = at(DAY, 10);
+        return new RoundSettledEvent("DEMO", roundId, 7, 1, "PHP", "game-1", "SLOT", "Game 1", amount,
+                BigDecimal.ZERO, amount, null, status, settledAt.minusSeconds(30), settledAt, revision);
     }
 
     private static Instant at(LocalDate day, int hour) {

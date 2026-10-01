@@ -16,6 +16,11 @@ import java.util.concurrent.TimeUnit;
  * Polls pending outbox rows and publishes them to Kafka (acks=all, waits for the broker). {@code FOR UPDATE SKIP
  * LOCKED} lets every replica run the relay concurrently without double-sending the same row. Consumers are
  * idempotent anyway, because a crash between send and commit re-sends the row.
+ * <p>
+ * A row is never given up: a business event that is not delivered is a deposit without its wagering requirement or a
+ * bonus without its bucket. Failed sends back off up to 5 minutes and are retried until Kafka accepts them; after
+ * {@code alert-after-retries} failures every further failure is an ALERT. Sent rows are purged after
+ * {@code keep-sent-days}.
  */
 @Slf4j
 public class OutboxRelay implements SmartLifecycle {
@@ -28,13 +33,17 @@ public class OutboxRelay implements SmartLifecycle {
     private static final String MARK_SENT_SQL = "UPDATE mq_outbox SET status = 1, sent_at = NOW(3) WHERE id = ?";
     /** MySQL evaluates SET assignments left to right, so retry_count must be incremented last. */
     private static final String MARK_RETRY_SQL = """
-            UPDATE mq_outbox SET status = IF(retry_count + 1 >= ?, 2, 0),
-                   next_retry_at = DATE_ADD(NOW(3), INTERVAL LEAST(POW(2, retry_count), 300) SECOND),
+            UPDATE mq_outbox SET next_retry_at = DATE_ADD(NOW(3), INTERVAL LEAST(POW(2, retry_count), 300) SECOND),
                    retry_count = retry_count + 1
              WHERE id = ?
             """;
+    /** next_retry_at of a sent row is its last attempt, i.e. about its send time; the range uses idx_status_next. */
+    private static final String PURGE_SQL = """
+            DELETE FROM mq_outbox WHERE status = 1 AND next_retry_at < DATE_SUB(NOW(3), INTERVAL ? DAY) LIMIT 1000
+            """;
 
     private static final long SEND_TIMEOUT_SECONDS = 5;
+    private static final long PURGE_INTERVAL_MINUTES = 10;
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -61,9 +70,9 @@ public class OutboxRelay implements SmartLifecycle {
                         kafkaTemplate.send(row.topic(), row.key(), row.payload()).get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                         jdbcTemplate.update(MARK_SENT_SQL, row.id());
                     } catch (Exception e) {
-                        jdbcTemplate.update(MARK_RETRY_SQL, properties.maxRetries(), row.id());
-                        if (row.retryCount() + 1 >= properties.maxRetries()) {
-                            log.error("outbox message {} moved to FAILED after {} retries, key={}", row.id(), row.retryCount() + 1, row.key(), e);
+                        jdbcTemplate.update(MARK_RETRY_SQL, row.id());
+                        if (row.retryCount() + 1 >= properties.alertAfterRetries()) {
+                            log.error("ALERT outbox message {} still not sent after {} attempts, key={}", row.id(), row.retryCount() + 1, row.key(), e);
                         } else {
                             log.warn("outbox send failed, id={}, key={}", row.id(), row.key(), e);
                         }
@@ -75,10 +84,22 @@ public class OutboxRelay implements SmartLifecycle {
         }
     }
 
+    void purgeSent() {
+        try {
+            int deleted;
+            do {
+                deleted = jdbcTemplate.update(PURGE_SQL, properties.keepSentDays());
+            } while (deleted == 1000);
+        } catch (Exception e) {
+            log.warn("outbox purge failed: {}", e.toString());
+        }
+    }
+
     @Override
     public void start() {
         scheduler = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().name("outbox-relay").daemon(true).factory());
         scheduler.scheduleWithFixedDelay(this::relayOnce, properties.relayIntervalMs(), properties.relayIntervalMs(), TimeUnit.MILLISECONDS);
+        scheduler.scheduleWithFixedDelay(this::purgeSent, 1, PURGE_INTERVAL_MINUTES, TimeUnit.MINUTES);
     }
 
     @Override

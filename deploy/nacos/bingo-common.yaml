@@ -37,5 +37,5 @@ xxl:
       addresses: ${XXL_JOB_ADMIN:http://127.0.0.1:18081}
     access-token: ${XXL_JOB_TOKEN:}
     # executor.appname defaults to spring.application.name (create one executor per service in the admin UI);
-    # executor.port comes from XXL_JOB_EXECUTOR_PORT / the service's own config (9101..9109).
+    # executor.port is fixed in each service's application.yml (9101..9111) and must match its manifest's xxl port.
 

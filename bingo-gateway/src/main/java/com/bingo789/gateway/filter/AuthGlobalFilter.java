@@ -128,8 +128,9 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     }
 
     /**
-     * With trustedHops = 0 the edge (WAF/ELB) must overwrite X-Forwarded-For; if it appends instead, a client
-     * could choose its own IP, which would blind risk's multi-account detection.
+     * The entry our outermost proxy appended (trustedHops from the right). Entries further left are whatever the client
+     * sent; trusting them would let a client choose its IP for rate limits, the waiting room and risk's multi-account
+     * detection.
      */
     private String clientIp(ServerHttpRequest request) {
         List<String> forwarded = request.getHeaders().get(X_FORWARDED_FOR);

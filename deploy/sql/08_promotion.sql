@@ -23,10 +23,12 @@ CREATE TABLE IF NOT EXISTS valid_bet_daily (
 -- round_key = providerCode:roundId:userId
 -- TODO: retention job (or daily RANGE partitions on created_at) deleting rows older than the Kafka retention plus a margin.
 CREATE TABLE IF NOT EXISTS promotion_round_applied (
-  round_key  VARCHAR(255) NOT NULL PRIMARY KEY,
-  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  round_key  VARCHAR(255)  NOT NULL PRIMARY KEY,
+  revision   INT           NOT NULL DEFAULT 1 COMMENT 'RoundSettledEvent.revision applied last',
+  valid_bet  DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT 'valid bet of that revision, already in valid_bet_daily',
+  created_at DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   KEY idx_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='per-round dedupe of bingo.round.settled; purged after 35 days (promotionRoundAppliedRetentionJob)';
 
 -- Promotions ("活动"): common fields are columns, everything specific to promo_type lives in config_json.
 -- user_lines (plural, a set of lines) says which lines' players see and can receive the promotion; it is distinct from
@@ -115,7 +117,7 @@ CREATE TABLE IF NOT EXISTS mq_outbox (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   topic VARCHAR(128) NOT NULL COMMENT 'Kafka topic', msg_key VARCHAR(128) NOT NULL COMMENT 'Kafka message key',
   payload JSON NOT NULL,
-  status TINYINT NOT NULL DEFAULT 0 COMMENT '0 pending, 1 sent, 2 failed (alert)',
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0 pending (retried until sent), 1 sent (purged after 7 days)',
   retry_count INT NOT NULL DEFAULT 0,
   next_retry_at DATETIME(3) NOT NULL, sent_at DATETIME(3) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

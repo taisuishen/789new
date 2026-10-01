@@ -45,7 +45,9 @@ import java.util.concurrent.TimeUnit;
  * Without a checkpoint the first window ends at now - settleDelay; to backfill, insert a bet_pull_checkpoint row
  * with the desired start (catch-up then proceeds max-window per run).
  * Rate limits: pages are fetched sequentially with a pause; game-integration additionally runs each provider
- * query inside that provider's bulkhead.
+ * query inside that provider's bulkhead. Window and pause can be set per provider
+ * (bingo.bet-record.pull.providers.CODE.*). Providers whose API accepts shorter windows than max-window, or pages by
+ * number / cursor, split the window themselves: their adapter returns hasMore with a cursor for the next part.
  */
 @Slf4j
 @Component
@@ -82,7 +84,7 @@ public class ProviderBetPullJob {
     }
 
     private void pull(String providerCode) throws Exception {
-        BetRecordProperties.Pull cfg = properties.pull();
+        BetRecordProperties.Pull cfg = properties.pull().forProvider(providerCode);
         Instant now = Instant.now();
         // checkpoints are not per user: they live on the global shard
         BetPullCheckpoint checkpoint = shards.onGlobal(() -> MasterRoute.run(() -> checkpointMapper.selectById(providerCode)));

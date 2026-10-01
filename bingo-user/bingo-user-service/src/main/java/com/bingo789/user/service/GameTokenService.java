@@ -42,14 +42,19 @@ public class GameTokenService {
         // command.clientIp is deliberately not bound to the token: providers present it from their own servers.
         String token = Tokens.newToken();
         GameTokenView view = new GameTokenView(true, token, command.userId(), command.providerCode(), command.gameCode(),
-                command.currency(), clock.instant().plus(properties.ttl()));
+                command.currency(), clock.instant().plus(properties.ttl()), true);
         redis.opsForValue().set(SessionKeys.gameToken(token), JsonUtils.toJson(view), properties.ttl());
         return view;
     }
 
     /**
-     * Re-checks the compliance gate, so a self-exclusion or suspension after launch invalidates outstanding tokens
-     * (there is no per-user index of game tokens to revoke them eagerly).
+     * Re-checks the compliance gate on every verification ({@code playAllowed}), so a self-exclusion or suspension after
+     * launch stops new stakes on outstanding tokens (there is no per-user index of game tokens to revoke them eagerly),
+     * while the token still identifies the player for the wins and refunds of rounds already in play.
+     * <p>
+     * Sliding expiry: every successful verification extends the token to now + ttl. Providers that present the token
+     * on every call (game-integration verifies it at most every 30 s per player) keep a long session alive; an idle
+     * token still dies ttl after its last use.
      */
     public GameTokenView verify(String token) {
         if (!Tokens.isWellFormed(token)) {
@@ -64,10 +69,15 @@ public class GameTokenService {
         if (view.expiresAt() == null || !view.expiresAt().isAfter(now) || view.userId() == null) {
             return GameTokenView.invalid();
         }
+        boolean playAllowed;
         try {
-            return playerStatusService.status(view.userId()).canPlay() ? view : GameTokenView.invalid();
+            playAllowed = playerStatusService.status(view.userId()).canPlay();
         } catch (BizException e) {
             return GameTokenView.invalid(); // unknown user
         }
+        GameTokenView extended = new GameTokenView(true, view.token(), view.userId(), view.providerCode(), view.gameCode(),
+                view.currency(), now.plus(properties.ttl()), playAllowed);
+        redis.opsForValue().set(SessionKeys.gameToken(token), JsonUtils.toJson(extended), properties.ttl());
+        return extended;
     }
 }

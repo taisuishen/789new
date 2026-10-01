@@ -23,30 +23,33 @@
 
 - 钱包 400k / 16 实例 = 25k TPS/主，正好在单主能力的上沿。1024 个逻辑分片落在 16 个库 `bingo_wallet_00..15`（每库 64 个），库可以任意组合放在实例上；扩容就是用 DRS 把整个库在线搬到新实例，低峰切路由，这部分玩家只停写几秒（步骤见 `application-sharding.yml` 文件头）。**库的个数和 1024 一样第一天定死**，所以每类最多 16 个实例；再往上只能升单实例规格（计算器里香港、新加坡最大 32 核），或者按 `shard_no` 在停写状态下拆库。
 - 热点：个别大户和机器人会让某些逻辑分片偏热，按实例（而不是按平均值）监控 TPS / CPU / 行锁等待。
-- 平峰（凌晨、工作日白天）约为峰值的 1/5–1/10，HPA 的 `minReplicas` 按 1/5 取值。
+- 平峰（凌晨、工作日白天）约为峰值的 1/5–1/10，KEDA 的 `minReplicaCount` 按 1/5 取值。
 - 超出容量时，网关对**新登录 / 新开游戏**排队（等候室），**已在游戏中的玩家不受影响**（厂商回调不经过网关）。
 
 ## 2. 各服务规格与伸缩方式
 
-Pod 规格统一 4 vCPU / 8 GiB，requests == limits（Guaranteed QoS；HPA 的 CPU 利用率按 requests 计算，limit 等于 request 时目标值才有意义）。JVM 堆为内存上限的 75%（6 GiB），业务服务使用虚拟线程。
+Pod 规格统一 4 vCPU / 8 GiB，requests == limits（Guaranteed QoS；KEDA cpu 触发器的利用率按 requests 计算，limit 等于 request 时目标值才有意义）。JVM 堆为内存上限的 75%（6 GiB），业务服务使用虚拟线程。
 
-| 服务 | 峰值 Pod | 最小 / 最大 | 伸缩机制 | CPU 目标 | 节点池 | 优先级 | PDB | DB 连接池 |
+| 服务 | 峰值 Pod | 最小 / 最大 | KEDA 触发器 | CPU 目标 | 节点池 | 优先级 | PDB | DB 连接池 |
 |---|---|---|---|---|---|---|---|---|
-| bingo-game-integration | ~100 | 20 / 160 | HPA + CronHPA | 50% | callback（专用、污点） | bingo-critical | 10% | 4 |
-| bingo-wallet | ~100 | 20 / 160 | HPA + CronHPA | 50% | general | bingo-critical | 10% | 8 / 实例 |
-| bingo-gateway | ~50 | 10 / 80 | HPA + CronHPA | 60% | general | bingo-online | 15% | - |
-| bingo-user | ~20 | 6 / 30 | HPA + CronHPA | 60% | general | bingo-online | 20% | 16 |
-| bingo-lobby | ~20 | 6 / 30 | HPA + CronHPA | 60% | general | bingo-online | 20% | 8 |
-| bingo-payment | 10 | 3 / 15 | HPA + CronHPA | 60% | general | bingo-online | 20% | 16 |
-| bingo-bet-record | ≤64 | 12 / 64 | KEDA（lag + CPU + cron） | 70% | consumer（污点） | bingo-async | 20% | 8 / 实例 |
-| bingo-reconcile | 8–32 | 8 / 32 | KEDA（2 个 lag + CPU） | 70% | consumer | bingo-async | 20% | 8 |
-| bingo-turnover | 8–32 | 8 / 32 | KEDA（lag + CPU） | 70% | consumer | bingo-async | 20% | 8 / 实例 |
-| bingo-risk | 2–8 | 2 / 8 | HPA（CPU） | 60% | general | bingo-async | 20% | 8 |
-| bingo-promotion | 8–32 | 8 / 32 | KEDA（lag + CPU） | 70% | consumer | bingo-async | 20% | 8 |
+| bingo-game-integration | ~100 | 20 / 160 | CPU + 晚高峰 | 50% | callback（专用、污点） | bingo-critical | 10% | 4 |
+| bingo-wallet | ~100 | 20 / 160 | CPU + 晚高峰 | 50% | general | bingo-critical | 10% | 8 / 库 |
+| bingo-gateway | ~50 | 10 / 80 | CPU + 晚高峰 | 60% | general | bingo-online | 15% | - |
+| bingo-user | ~20 | 6 / 30 | CPU + 晚高峰 | 60% | general | bingo-online | 20% | 16 |
+| bingo-lobby | ~20 | 6 / 30 | CPU + 晚高峰 | 60% | general | bingo-online | 20% | 8 |
+| bingo-payment | 10 | 3 / 15 | CPU + 晚高峰 | 60% | general | bingo-online | 20% | 16 |
+| bingo-bet-record | ≤64 | 12 / 64 | lag + CPU + 晚高峰 | 70% | consumer（污点） | bingo-async | 20% | 8 / 库 |
+| bingo-turnover | 8–32 | 8 / 32 | lag + CPU + 晚高峰 | 70% | consumer | bingo-async | 20% | 8 / 库 |
+| bingo-promotion | 8–32 | 8 / 32 | lag + CPU + 晚高峰 | 70% | consumer | bingo-async | 20% | 8 |
+| bingo-risk | 2–8 | 2 / 8 | CPU | 60% | general | bingo-async | 20% | 8 |
+| bingo-kyc | 2–10 | 2 / 10 | CPU | 60% | general | bingo-online | 20% | 8 |
+| bingo-reconcile | 2 | 2 / 2 | 固定 | - | consumer | bingo-async | 20% | 8 |
+
+表里是 100 万在线的数值；5 万、10 万在线各档的最小 / 晚高峰 / 最大见 `deploy/k8s/autoscaling.yaml` 文件头（清单默认是 5 万档）。bingo-reconcile 只跑定时任务，汇总数据从 StarRocks 读，不消费 Kafka。
 
 - 回调和钱包的 CPU 目标定为 50%：这两层看的是延迟（厂商回调超时通常 3–10 s，钱包 RPC 预算 1.5 s），不是利用率；多出来的余量用来吸收扩容反应时间内的增长（见 §8.4 的推导）。
 - 消费者按 lag 扩缩：`bingo.wallet.txn` 192 分区，每个 Pod 3 个监听线程，所以 bet-record 最多 64 个 Pod 才有意义；`bingo.round.settled` 96 分区 → turnover / promotion 最多 32 个。
-- `replicas` 不写在清单里，由 HPA / KEDA 负责（重新 apply 带 `spec.replicas` 的清单会在高峰期把已扩容的工作负载打回最小值）。新建时 HPA 在一个同步周期（~15 s）内从 1 扩到 `minReplicas`。
+- `replicas` 不写在清单里，由 KEDA 负责（重新 apply 带 `spec.replicas` 的清单会在高峰期把已扩容的工作负载打回最小值）。新建时 KEDA 的 HPA 在一个同步周期（~15 s）内从 1 扩到 `minReplicaCount`；没装 KEDA 的测试环境每个工作负载 1 个 Pod。
 - PDB 用百分比：100+ 个 Pod 时 `maxUnavailable: 1` 会让节点排空（集群缩容、节点池升级）拖上几个小时；百分比向上取整，所以任何时候至少允许 1 个。
 - StatefulSet 滚动升级默认一次一个 Pod，100 个钱包 Pod 要 ~2 小时。清单里写了 `updateStrategy.rollingUpdate.maxUnavailable`，需要集群打开 `MaxUnavailableStatefulSet` 特性门控才生效（`# verify`）；不生效时只在平峰发布。
 - Tomcat / JVM：`server.tomcat.max-connections`、`server.tomcat.threads.*`、`accept-count` 和虚拟线程开关由各服务的 application.yml 设置，清单只负责 Pod 规格。虚拟线程下，单 Pod 并发由 max-connections 和下游连接池（Hikari、Feign/HttpClient）约束，不再是平台线程池。网关是 Netty（WebFlux），`server.tomcat.*` 不适用，event loop 数跟 CPU limit（4）走。
@@ -54,27 +57,28 @@ Pod 规格统一 4 vCPU / 8 GiB，requests == limits（Guaranteed QoS；HPA 的 
 
 ### 2.1 连接数预算
 
-钱包分片后，**每个钱包 Pod 对每个分片库各持有一个连接池**（该库的 64 个逻辑分片共用这个池；100 万在线时一个实例一个库）：
+钱包分片后，**每个钱包 Pod 对每个分片库（`bingo_wallet_NN`）各持有一个连接池**（最大 `DB_POOL_SIZE`，空闲 2 个）：
 
 ```
-每个 TaurusDB 主库的连接数 = 钱包 Pod 数 × DB_POOL_SIZE
-  预计峰值：100 × 8 =   800
-  HPA 上限：160 × 8 = 1,280   （另加 Flink CDC、对账只读、DBA 会话，约 50）
-每个钱包 Pod 的连接数 = 16 实例 × 8 = 128
+每个 TaurusDB 主库的连接数 = 钱包 Pod 数 × 该实例上的库数 × DB_POOL_SIZE
+  100 万在线（每实例 1 个库）：峰值 100 × 1 × 8 = 800，KEDA 上限 160 × 1 × 8 = 1,280
+  5 万在线（16 个库在同一实例）：KEDA 上限 12 × 16 × 8 = 1,536
+  （另加 Flink CDC、DBA 会话，约 50）
+每个钱包 Pod 的连接数上限 = 16 个库 × 8 = 128
 ```
 
-- `HPA 上限 × DB_POOL_SIZE` 要低于实例 `max_connections` 的 ~70%（按所选规格 / Serverless 最小 TCU 核实该值）。**钱包的 `maxReplicas` 就是连接预算的上限**，CronHPA 的目标值不得超过它（超过会让 CronHPA 抬高 HPA 的 max）。
+- `KEDA 上限 × 库数 × DB_POOL_SIZE` 要低于实例 `max_connections` 的 ~70%（按所选规格核实该值）。**钱包的 `maxReplicaCount` 就是连接预算的上限**，晚高峰的 `desiredReplicas` 不得超过它；换档（`autoscaling.yaml` 文件头）或搬库后重算一遍。
 - 池子为什么只要 8：一次钱包操作占用连接 ~1–3 ms，每 Pod 每实例峰值约 2.5k / 16 ≈ 150 TPS，平均不到 1 个连接，池子只是吸收抖动。
-- 分片路由是平台自研的（`bingo-common-mybatis` 的 `com.bingo789.common.mybatis.shard`，不用 ShardingSphere）：`userId → SplitMix64 哈希 → 逻辑分片 0..1023 → 路由表 → 数据源`。每个数据源一个 Hikari 池，大小由 `bingo.shard.pool.max-pool-size`（= `DB_POOL_SIZE`，默认 8）决定，`min-idle` 2。配置在 `bingo-wallet-service` 的 `application-sharding.yml`（`SPRING_PROFILES_ACTIVE=sharding`），实例地址 `WALLET_DB_HOST_00..15` 来自 ConfigMap `bingo-wallet-shards`。
+- 分片路由是平台自研的（`bingo-common-mybatis` 的 `com.bingo789.common.mybatis.shard`，不用 ShardingSphere）：`userId → SplitMix64 哈希 → 逻辑分片 0..1023 → 路由表 → 数据源（= 一个库）`。每个数据源一个 Hikari 池，大小由 `bingo.shard.pool.max-pool-size`（= `DB_POOL_SIZE`，默认 8）决定，`min-idle` 2。配置在 `bingo-wallet-service` 的 `application-sharding.yml`（`SPRING_PROFILES_ACTIVE=sharding`），实例地址 `WALLET_DB_HOST_00..15` 来自 ConfigMap `bingo-wallet-shards`。
 - 路由表 `bingo.shard.routes` 与 `bingo.shard.migrating-shards` 可在 Nacos 热更新（非法的新路由会被拒绝、保留旧路由）；迁移中的逻辑分片拒绝写入（HTTP 503，可重试），读继续走旧库。迁移步骤见 `application-sharding.yml` 文件头。
 
 bet-record 与钱包同样分片（同一个哈希，1024 逻辑分片、16 个独立 TaurusDB 实例，`BET_RECORD_DB_HOST_00..15` 来自 ConfigMap `bingo-bet-record-env`，见 `deploy/k8s/bingo-bet-record-shards.yaml`）：每个 bet-record 主库 64 Pod × 8 = 512 连接（KEDA 上限）。注单拉取的检查点表在 ds00；扫描类任务（未结算局、补发事件）按数据源逐个执行。
 
-共享实例（user、lobby、payment、risk、promotion、reconcile、game）按 HPA / KEDA 上限计（稽核 bingo-turnover 与注单一样分 16 个库，可与注单同实例：每主库 32 Pod × 8 = 256 连接）：
+共享实例（user、lobby、payment、risk、promotion、reconcile、game）按 KEDA 上限计（稽核 bingo-turnover 与注单一样分 16 个库，可与注单同实例：每主库 32 Pod × 8 = 256 连接）：
 
 ```
-user 30×16 + lobby 30×8 + payment 15×16 + risk 8×8 + promotion 32×8 + reconcile 32×8 + game-integration 160×4
-= 480 + 240 + 240 + 64 + 256 + 256 + 640 = 2,176
+user 30×16 + lobby 30×8 + payment 15×16 + risk 8×8 + promotion 32×8 + reconcile 2×8 + game-integration 160×4
+= 480 + 240 + 240 + 64 + 256 + 16 + 640 = 1,936
 ```
 
 game-integration 的 application.yml 写死了 `maximum-pool-size: 20`（160 × 20 = 3,200），清单用环境变量 `SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE=4` 覆盖（环境变量优先于 application.yml 和 Nacos 配置；回调链路本身不访问数据库，只有转账钱包订单用）。
@@ -83,88 +87,53 @@ game-integration 的 application.yml 写死了 `maximum-pool-size: 20`（160 × 
 
 ## 3. 伸缩机制
 
-### 3.1 HPA（autoscaling/v2）
+### 3.1 只用 KEDA
 
-- 清单：钱包、回调、网关的 HPA 在各自的清单里；user / lobby / payment 在 `autoscaling-hpa.yaml`。
-- `behavior`：扩容快（稳定窗口 0–30 s，每 15 s 最多翻倍或 +N 个，取大者），缩容慢（稳定窗口 5–10 分钟，每分钟最多 10%）。
-- 内存不作为指标：JVM 堆不会回缩，内存利用率不反映负载。
-- HPA 需要资源指标 API：安装 CCE 插件“Kubernetes Metrics Server”（或云原生监控插件的 adapter）。
+**所有工作负载只用一种机制：KEDA 的 ScaledObject**（`deploy/k8s/autoscaling.yaml`，每个工作负载一个）。原来 HPA + CCE CronHPA + KEDA + KEDA cron 四套叠加，现在合成一套：
 
-### 3.2 KEDA（Kafka 消费者）
-
-- **CCE 没有 KEDA 插件**（插件总览里没有），用 Helm 安装：
+- 触发器：`cpu`（所有工作负载的负载信号）、`cron`（晚高峰下限）、`kafka`（消费者的 lag）。KEDA 为每个 ScaledObject 创建并接管一个 HPA（`keda-hpa-<名字>`），副本数 = 所有触发器的最大值，限定在 [`minReplicaCount`, `maxReplicaCount`]。
+- `cron` 触发器自带 IANA 时区（`Asia/Manila`），不依赖节点或控制器的时区；CCE 的 CronHPA 没有时区字段，也不再需要“容器弹性引擎”插件。
+- 下限写在触发器里，**重新 apply 不会把已扩容的工作负载打回基线**（CronHPA + HPA 时代的坑）。
+- `behavior`：在线服务扩容快（每 15 s 最多翻倍或 +10 个）、缩容慢（稳定窗口 10 分钟，每分钟最多 10%）；消费者扩容分步（每 30 s +50% 或 +8 个），因为每次扩缩都是一次消费组重平衡。
+- 内存不作为指标：JVM 堆不会回缩，内存利用率不反映负载。cpu 触发器需要资源指标 API（CCE 插件“Kubernetes Metrics Server”或云原生监控插件的 adapter）。
+- 安装：**CCE 没有 KEDA 插件**，用 Helm 装：
   ```bash
   helm repo add kedacore https://kedacore.github.io/charts
   helm install keda kedacore/keda --namespace keda --create-namespace --version <与集群版本匹配的 chart>
   ```
-  版本按 KEDA 兼容矩阵选：2.21 → Kubernetes 1.34–1.36，2.20 → 1.33–1.35，2.18 → 1.31–1.33。镜像在 ghcr.io，节点无外网时先同步到 SWR。
-- 一个集群只能有一个 `external.metrics.k8s.io` 提供者，安装前 `kubectl get apiservice v1beta1.external.metrics.k8s.io` 确认没有被别的组件占用。
-- **一个工作负载只能有一个 HPA 或一个 ScaledObject，不能同时有**：KEDA 会为每个 ScaledObject 创建并接管自己的 HPA（`keda-hpa-<名字>`），KEDA 的准入 webhook 会拒绝目标已被其它 HPA 管理的 ScaledObject。所以消费者没有单独的 HPA，CPU 指标是 ScaledObject 里的 `cpu` 触发器；CronHPA 也绝不能指向 `keda-hpa-*`（KEDA 会改回去），KEDA 工作负载的定时下限用 KEDA 自己的 `cron` 触发器（支持 IANA 时区，bet-record 已配置晚高峰预扩到 32）。
-- 清单：`autoscaling-keda.yaml`。消费组 ID 取自 Java 源码的 `@KafkaListener`：
+  版本按 KEDA 兼容矩阵选：2.21 → Kubernetes 1.34–1.36，2.20 → 1.33–1.35，2.18 → 1.31–1.33。镜像在 ghcr.io，节点无外网时先同步到 SWR。一个集群只能有一个 `external.metrics.k8s.io` 提供者，安装前 `kubectl get apiservice v1beta1.external.metrics.k8s.io` 确认没被别的组件占用。
+- 一个工作负载只能有一个 HPA 或一个 ScaledObject。清单里已经没有单独的 HPA，不要再手工建。
 
-  | 服务 | 消费组 | Topic | lagThreshold（每 Pod） | 最小 / 最大 |
-  |---|---|---|---|---|
-  | bet-record | `bingo-bet-record` | bingo.wallet.txn | 20,000 | 12 / 64 |
-  | reconcile | `bingo-reconcile-platform` | bingo.wallet.txn | 20,000 | 8 / 32 |
-  | reconcile | `bingo-reconcile-provider` | bingo.provider.bet | 5,000 | （同上，此触发器最多要 8 个） |
-  | turnover | `bingo-turnover` | bingo.round.settled | 10,000 | 8 / 32 |
-  | promotion | `bingo-promotion-validbet` | bingo.round.settled | 10,000 | 8 / 32 |
+### 3.2 Kafka lag 与晚高峰下限
 
-- 副本计算：`期望副本 = 消费组总 lag / lagThreshold`（AverageValue），再取所有触发器的最大值。Kafka scaler 默认把副本数封顶在分区数（假定每 Pod 1 个消费者）；我们每 Pod 3 线程，所以 `maxReplicaCount = 分区数 / 3`。lagThreshold 约等于“每 Pod 5 秒的积压”，压测后按实测单 Pod 吞吐重算。
-- `offsetResetPolicy: earliest` 与应用的 `auto-offset-reset: earliest` 一致；新消费组没有提交过位点时，KEDA 把整个 topic 当成 lag，直接扩到最大去追，这是预期行为。
-- DMS Kafka SASL_SSL：`TriggerAuthentication dms-kafka-sasl-ssl` 引用 Secret `keda-dms-kafka`（占位见 `secrets-example.yaml`，生产放 DEW/CSMS）：`sasl=scram_sha512`（或 `plaintext` = SASL/PLAIN）、专用只读用户、`tls=enable`、`ca` = DMS 控制台下载的 PEM 证书；内网 SASL 端口 9093（以实例“连接信息”为准）。DMS 要求客户端关闭证书域名校验，而 KEDA（Go）默认校验主机名；如果 scaler 报 x509 主机名错误，只能把 `unsafeSsl` 设为 `"true"`（VPC 内仍加密，但不再校验服务端身份）。
-- `fallback`：Kafka 指标连续失败 4 次时按固定副本数兜底（cpu 触发器照常工作，HPA 取最大值，不会因此缩容）。
-- 重平衡：每次扩缩都是一次消费组重平衡，所以消费者扩容是分步的（每 30 s +50% 或 +8 个）。需要服务团队配合：静态成员（`group.instance.id = POD_NAME`，StatefulSet 的 Pod 名稳定）+ `CooperativeStickyAssignor`，滚动发布和扩缩时只迁移少量分区。
+消费组 ID 取自 Java 源码的 `@KafkaListener`（100 万在线的数值）：
 
-### 3.3 CronHPA（定时预扩容）
-
-已核实（cce_10_0415）：插件“CCE容器弹性引擎”（原 cce-hpa-controller）≥ 1.2.13；`apiVersion: autoscaling.cce.io/v2alpha1`，`kind: CronHorizontalPodAutoscaler`；`scaleTargetRef` 指向 HPA（文档示例用 `autoscaling/v1`）或 Deployment；`rules[]` 含 `ruleName`、`schedule`（5 段 cron）、`targetReplicas`、`disable`；每个策略最多 10 条规则，触发时间不能相同。指向 HPA 时，CronHPA 改写 HPA 的 `minReplicas`（只有目标值大于 max 时才改 `maxReplicas`）——这是文档推荐的 CronHPA + HPA 组合方式；**不要**在已有 HPA 时让 CronHPA 直接指向工作负载（两者会互相覆盖）。
-
-**时区**：CronHPA 没有时区字段，“触发时间基于节点所在时区计算”。香港、新加坡都是 UTC+8；上线前在节点上 `date -R`、在 `customedhpa-controller` Pod 里 `date` 确认。如果是 UTC，按下表换算（只有 night-down 跨日，而它每天都触发，所以不受影响）：
-
-| 规则 | 生效日 | UTC+8 | 若控制器为 UTC | 设置的下限 |
+| 服务 | 消费组 | Topic | lagThreshold（每 Pod） | 最小 / 最大 |
 |---|---|---|---|---|
-| weekend-day | 周六、周日 | `0 10 * * 0,6` | `0 2 * * 0,6` | D |
-| payday-day | 15 日、28–31 日 | `0 11 15,28-31 * *` | `0 3 15,28-31 * *` | D |
-| weekend-evening | 周五、六、日 | `25 18 * * 0,5,6` | `25 10 * * 0,5,6` | W |
-| weekday-evening | 周一至周四 | `30 18 * * 1-4` | `30 10 * * 1-4` | E |
-| payday-evening | 15 日、28–31 日 | `35 18 15,28-31 * *` | `35 10 15,28-31 * *` | P（晚于 E/W 触发，所以发薪日以它为准） |
-| night-down | 每天 | `15 1 * * *` | `15 17 * * *` | B（= HPA 清单里的 min） |
+| bet-record | `bingo-bet-record` | bingo.wallet.txn | 20,000 | 12 / 64 |
+| turnover | `bingo-turnover` | bingo.round.settled | 10,000 | 8 / 32 |
+| promotion | `bingo-promotion-validbet` | bingo.round.settled | 10,000 | 8 / 32 |
 
-各服务下限（B / D / E / W / P，HPA max）：
+- 副本计算：`期望副本 = 消费组总 lag / lagThreshold`（AverageValue），再和其它触发器取最大。Kafka scaler 默认把副本数封顶在分区数（假定每 Pod 1 个消费者）；我们每 Pod 3 线程，所以 `maxReplicaCount = 分区数 / 3`。lagThreshold 约等于“每 Pod 5 秒的积压”，压测后按实测单 Pod 吞吐重算。
+- `offsetResetPolicy: earliest` 与应用的 `auto-offset-reset: earliest` 一致；新消费组没有提交过位点时，KEDA 把整个 topic 当成 lag，直接扩到最大去追，这是预期行为。
+- DMS Kafka SASL_SSL：`TriggerAuthentication dms-kafka-sasl-ssl` 引用 Secret `keda-dms-kafka`：`sasl=scram_sha512`（或 `plaintext` = SASL/PLAIN）、专用只读用户、`tls=enable`、`ca` = DMS 控制台下载的 PEM 证书；内网 SASL 端口 9093（以实例“连接信息”为准）。DMS 要求客户端关闭证书域名校验，而 KEDA（Go）默认校验主机名；如果 scaler 报 x509 主机名错误，只能把 `unsafeSsl` 设为 `"true"`（VPC 内仍加密，但不再校验服务端身份）。
+- `fallback`：Kafka 指标连续失败 4 次时按固定副本数兜底（cpu 触发器照常工作，取最大值，不会因此缩容）。
+- 重平衡：需要服务团队配合静态成员（`group.instance.id = POD_NAME`，StatefulSet 的 Pod 名稳定）+ `CooperativeStickyAssignor`，滚动发布和扩缩时只迁移少量分区。
 
-| 服务 | B | D | E | W | P | max |
-|---|---|---|---|---|---|---|
-| bingo-wallet | 20 | 40 | 70 | 85 | 100 | 160 |
-| bingo-game-integration | 20 | 40 | 70 | 85 | 100 | 160 |
-| bingo-gateway | 10 | 20 | 35 | 42 | 50 | 80 |
-| bingo-user | 6 | 9 | 14 | 16 | 20 | 30 |
-| bingo-lobby | 6 | 9 | 14 | 16 | 20 | 30 |
-| bingo-payment | 3 | 6 | 6 | 8 | 10 | 15 |
+**晚高峰下限**：每个在线服务和消费者一个 `cron` 触发器，`18:30–01:15`（马尼拉时间）把下限抬到“正常晚高峰的副本数”，提前 30 分钟给节点扩容留时间；01:15 以后回到 `minReplicaCount`，按每分钟 10% 慢慢缩。100 万在线的晚高峰下限：钱包 / 回调 85、网关 42、user / lobby 16、payment 8、bet-record 32、turnover / promotion 16。
 
-- 晚高峰 19:00–01:00：18:25 / 18:30 预扩（提前 30–35 分钟，给节点扩容留时间），01:15 回到基线，之后 HPA 按每分钟 10% 慢慢缩。
-- 发薪日：菲律宾一般 15 日和月底发薪。5 段 cron 写不出“每月最后一天”，所以 28–31 日都按发薪日处理（每月最多多预扩 3 个晚上，成本可接受）。发薪日逢周末/节假日提前到前一个工作日、以及一次性活动，临时加规则或手工调高 min（§9 检查清单）。
-- 事故中手工调高的下限会被下一条规则覆盖——保持手工下限期间把相关规则 `disable: true`。
-- 高峰时段不要重新 apply HPA 清单：会把 `minReplicas` 重置为基线，直到下一条 CronHPA 规则触发。
-- `# verify`：文档只描述了 HPA → Deployment；钱包、回调、user、lobby、payment 都是 StatefulSet。抬高 HPA 的 min 本身就会让 HPA 在一个同步周期内扩容 StatefulSet，上线前在集群里实测一次。另外星期列表、日期列表/范围写法（`0,5,6`、`15,28-31`）文档没有示例，需确认。
+- 发薪日（15 日、月底）、节假日和活动：前一天把相关工作负载的 `desiredReplicas`（或 `minReplicaCount`）调高，活动结束改回（§9 检查清单）。不为它们单独写规则：一套规则、手工调一处，比多条日期规则好维护。
+- 晚高峰下限取历史同类晚上实际副本数的 P95 × 1.1（§8.4），不得超过 `maxReplicaCount`。
 
-### 3.4 谁来设置 min / max
+### 3.3 谁来设置副本数
 
-扩容只有三种机制，各管一件事：
+只有 KEDA（每个工作负载一个 ScaledObject）决定 Pod 副本数；节点由集群弹性引擎按 Pending Pod 增加（§3.4），节点池的周期规则在晚高峰前 20 分钟先把节点加上。不做预测式弹性和 CCI 突发：晚高峰下限覆盖了可预见的高峰，突发流量由 cpu 触发器 + 节点弹性 + 网关等候室承接。
 
-| 组件 | 改什么 | 什么时候 | 约束 |
-|---|---|---|---|
-| HPA | 在线服务的副本数（按 CPU），限定在 [min, max] | 每 15 s | 唯一决定在线服务实际副本数的组件 |
-| CronHPA | HPA 的 `minReplicas` | 规则触发时刻（已知高峰前） | 所有目标值 ≤ HPA max，max 永远不被改；钱包的 max = 连接预算上限 |
-| KEDA | 消费者自己的 HPA（`keda-hpa-*`），按 Kafka lag + CPU | 每 15 s | 只管消费者；CronHPA 不得指向它，消费者的定时下限用 KEDA 的 `cron` 触发器 |
-
-节点由集群弹性引擎按 Pending Pod 增加（§3.5）；已知高峰前 CronHPA 抬高下限，节点提前扩出来。不做预测式弹性和 CCI 突发：CronHPA 覆盖了可预见的高峰，突发流量由 HPA + 节点弹性 + 网关等候室承接。
-
-### 3.5 节点弹性（CCE集群弹性引擎）
+### 3.4 节点弹性（CCE集群弹性引擎）
 
 - 插件：“CCE集群弹性引擎”（原 autoscaler）。Pod 因资源不足 Pending 时触发扩容，按“最小浪费”选规格；节点空闲（CPU 与内存的分配率都低于缩容阈值）默认 10 分钟后缩容；有 PDB、非控制器 Pod、`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`、kube-system 非 DaemonSet Pod 的节点不缩。不支持默认节点池。
 - 节点池“弹性伸缩”配置：**缩容最小数 / 扩容最大数 / 冷却时间**（新扩出的节点多长时间内不缩，建议 ≥ 30 分钟，避免预热的节点在高峰前被回收）。
-- 节点池弹性策略（`HorizontalNodeAutoscaler`，`autoscaling.cce.io/v1alpha1`）支持**周期触发**（cron，只能 ScaleUp、每次加 N 个节点）和**指标触发**（CPU / 内存分配率阈值），每池最多 10 条规则。可以在 CronHPA 之前 15 分钟先把节点加上：
+- 节点池弹性策略（`HorizontalNodeAutoscaler`，`autoscaling.cce.io/v1alpha1`）支持**周期触发**（cron，只能 ScaleUp、每次加 N 个节点）和**指标触发**（CPU / 内存分配率阈值），每池最多 10 条规则。可以在晚高峰下限生效（18:30）之前先把节点加上：
 
   ```yaml
   apiVersion: autoscaling.cce.io/v1alpha1
@@ -175,11 +144,11 @@ game-integration 的 application.yml 写死了 `maximum-pool-size: 20`（160 × 
   spec:
     disable: false
     rules:
-      - ruleName: evening-prewarm        # 18:10 加 9 个节点，18:25-18:35 CronHPA 抬高下限时直接用上
+      - ruleName: evening-prewarm        # 18:10 加 9 个节点，18:30 KEDA 晚高峰下限生效时直接用上
         type: Cron
         disable: false
         cronTrigger:
-          schedule: "10 18 * * *"         # 时区跟随系统设置，确认方法同 CronHPA
+          schedule: "10 18 * * *"         # 时区跟随节点系统设置：节点上 date -R 确认是 UTC+8
         action:
           type: ScaleUp
           unit: Node
@@ -233,9 +202,9 @@ game-integration 的 application.yml 写死了 `maximum-pool-size: 20`（160 × 
 
 | 类别 | 内容 | 反应时间 |
 |---|---|---|
-| 秒级自动 | HPA（15 s 同步）+ Pod 启动（JVM 30–60 s）；KEDA lag（15 s）；TaurusDB Serverless 纵向（4–20 s 触发）；网关降级开关（Nacos 推送即时生效）；等候室按每秒放行速率自动排队 / 放行 | 秒 – 1 分钟 |
+| 秒级自动 | KEDA cpu / lag 触发器（15 s）+ Pod 启动（JVM 30–60 s）；TaurusDB Serverless 纵向（4–20 s 触发）；网关降级开关（Nacos 推送即时生效）；等候室按每秒放行速率自动排队 / 放行 | 秒 – 1 分钟 |
 | 分钟级自动 | 集群弹性引擎扩节点（几分钟，实测）；TaurusDB Serverless 加只读节点 | 分钟 |
-| 定时自动 | CronHPA、KEDA cron、节点池周期触发 | 按日历 |
+| 定时自动 | KEDA cron（晚高峰下限）、节点池周期触发 | 按日历 |
 | **必须预置** | 逻辑分片数 1024（永久不变）；TaurusDB 物理实例数与逻辑分片分布；Kafka 分区数（192 / 96 / 24，上线后不改）；DMS broker 规格；DCS 分片数；ELB 规格与数量；EIP 带宽；Anti-DDoS 等级；CCE 集群管理规模；容器子网 IP；节点池上限与云资源配额（ECS、ENI）；钱包满配节点的预留容量；厂商容量承诺（各厂商能给我们打多少回调 QPS、他们的限流与报备流程，按周计）；华为云大促资源报备 | 小时 – 周 |
 
 ## 5. 过载保护：等候室与降级开关
@@ -283,8 +252,8 @@ bingo:
 ## 7. 发布与运维约定（1M 规模）
 
 - 钱包、回调只在平峰发布；StatefulSet 一次一个 Pod 时 100 个 Pod 需要约 2 小时。
-- 高峰时段（18:25–01:15、周末白天、发薪日）不重新 apply HPA / CronHPA 清单，不做节点池升级。
-- 任何人改 `maxReplicas` 或 `DB_POOL_SIZE`，必须同时更新 §2.1 的连接预算。
+- 高峰时段（18:30–01:15、周末白天、发薪日）不做节点池升级；`autoscaling.yaml` 随时可以重新 apply（下限在触发器里，不会打回基线）。
+- 任何人改 `maxReplicaCount` 或 `DB_POOL_SIZE`，或者搬库，必须同时更新 §2.1 的连接预算。
 
 ## 8. 全链路压测方案
 
@@ -308,7 +277,7 @@ bingo:
 2. 单链路：模拟厂商 → 回调 → 钱包 → TaurusDB（单实例打到 25k TPS 看能否撑住）。
 3. 全链路混合：玩家 API（登录、大厅、开游戏、余额）+ 回调 + 充值，按真实比例。
 4. 1.0x 峰值（250k 钱包 TPS）→ 1.6x 设计值（400k）→ 登录潮突刺（19:00 前后 10 分钟内的登录速率 × 3）。
-5. 弹性验证：从基线起压，测 HPA 反应（负载阶跃 → 新 Pod Ready）、节点扩容（Pending → 节点 Ready）、CronHPA 实际触发时间与时区。
+5. 弹性验证：从基线起压，测 KEDA 反应（负载阶跃 → 新 Pod Ready）、节点扩容（Pending → 节点 Ready）、cron 触发器的实际触发时间。
 6. 故障注入：TaurusDB 主备切换、一个 AZ 断网、Kafka broker 重启、Redis 分片主备切换、某厂商回调超时；验证可重试错误码、PDB、zone 打散。
 7. 长稳：峰值负载持续 4 小时，看内存、连接、GC、lag 是否收敛。
 8. 开关演练：等候室和降级开关各打开一次。
@@ -327,20 +296,20 @@ bingo:
 | Kafka | 生产延迟、各消费组 lag、重平衡次数与耗时、broker CPU / 网络 |
 | 消费者 | msg/s/Pod、批处理耗时、DB 写入耗时 |
 | DCS | ops/s（按分片）、CPU、延迟、大 key / 热 key |
-| 弹性 | HPA 反应时间、节点 Ready 时间、CronHPA 触发时刻 |
+| 弹性 | KEDA 反应时间、节点 Ready 时间、cron 触发时刻 |
 
-### 8.4 从压测结果推导 HPA / KEDA 参数
+### 8.4 从压测结果推导 KEDA 参数
 
 1. 单 Pod 拐点：`T_knee`（SLO 内的最大吞吐）与 `CPU_knee`。
 2. CPU 目标：`U_target = CPU_knee × (1 − g × t_react)`
    - `g`：最陡爬坡时每分钟的负载增长率（取生产 19:00 前后的实测，例如 5%/min）；
-   - `t_react`：HPA 同步（0.25 min）+ Pod 启动到 Ready（~1 min）+ 没有空闲节点时的节点扩容（~3 min）。
-   - 例：`CPU_knee = 75%`、`g = 5%/min`、有空闲节点（`t_react = 1.25`）→ 70%；需要扩节点（`t_react = 4.25`）→ 59%。所以钱包 / 回调取 50%，其余 60%，并用 CronHPA 预热避开“要扩节点”的情况。
+   - `t_react`：KEDA 的 HPA 同步（0.25 min）+ Pod 启动到 Ready（~1 min）+ 没有空闲节点时的节点扩容（~3 min）。
+   - 例：`CPU_knee = 75%`、`g = 5%/min`、有空闲节点（`t_react = 1.25`）→ 70%；需要扩节点（`t_react = 4.25`）→ 59%。所以钱包 / 回调取 50%，其余 60%，并用晚高峰下限（cron 触发器）预热避开“要扩节点”的情况。
 3. 每 Pod 请求量阈值（KEDA prometheus，可选方案）：`threshold = T_knee × U_target / CPU_knee`。
-4. `maxReplicas = 设计峰值 / (T_knee × U_target / CPU_knee) × 1.1`；钱包再受连接预算约束，取两者较小值。
-5. CronHPA 各档下限：取历史同类高峰（工作日晚上 / 周末 / 发薪日）实际副本数的 P95 × 1.1。
+4. `maxReplicaCount = 设计峰值 / (T_knee × U_target / CPU_knee) × 1.1`；钱包再受连接预算约束，取两者较小值。
+5. 晚高峰下限（cron 触发器的 `desiredReplicas`）：取历史同类晚上实际副本数的 P95 × 1.1。
 6. 消费者：`lagThreshold = 单 Pod msg/s × 可接受的积压秒数（~5 s）`；`maxReplicaCount = 分区数 / 每 Pod 线程数`。
-7. 把新值写回清单，并同步更新本文 §2、§3.3 的表格。
+7. 把新值写回 `autoscaling.yaml`（文件头的分档表一起改），并同步更新本文 §2 的表格。
 
 ## 9. 大促 / 活动前检查清单
 
@@ -349,30 +318,28 @@ bingo:
 | T-4 周 | 活动预估（峰值在线、spin 率、充值量）；**厂商容量确认**（每家的回调 QPS 上限、他们的限流、是否需要报备）；**华为云报备**（ECS 规格 × 数量 × AZ、ELB、EIP 带宽、Anti-DDoS、TaurusDB / DCS / DMS 扩容）；提升配额（ECS、ENI / IP） |
 | T-2 周 | 预置类调整完成：TaurusDB 实例与逻辑分片分布、DCS 分片、DMS broker、ELB 规格 / 拆分；全链路压测到预计峰值的 1.2x；故障演练（主备切换、AZ 断网） |
 | T-1 周 | **封网**（只允许紧急修复，Nacos 配置冻结）；**镜像预热**（节点预拉镜像）；预案评审：降级分级、等候室阈值、回滚方案；排班表与升级路径 |
-| T-1 天 | **扩容到峰值**：为活动加一条 CronHPA 规则（或手工把各 HPA 的 min 调到 P 档），节点池预热到峰值所需节点数（节点池周期规则或手工），TaurusDB Serverless 最小 TCU 调高，确认 KEDA / CronHPA 状态正常；**演练**：开关演练 + 冒烟压测 |
+| T-1 天 | **扩容到峰值**：把相关 ScaledObject 的晚高峰 `desiredReplicas`（全天活动则 `minReplicaCount`）调到预计峰值，节点池预热到峰值所需节点数（节点池周期规则或手工），TaurusDB Serverless 最小 TCU 调高，确认 ScaledObject 状态正常（`kubectl -n bingo get scaledobject`）；**演练**：开关演练 + 冒烟压测 |
 | T-0 | **值守大屏**：在线数与排队人数、登录/s、spin/s、钱包 TPS 与 p99（按实例）、回调 QPS 与错误码（按厂商）、各实例 CPU / TCU / 连接数、Kafka 各组 lag、各服务 Pod 数与 max 的距离、节点池余量、ELB QPS / 5xx、DCS ops/s；明确告警阈值与决策人（谁有权开降级 / 调等候室） |
-| T+1 | 逐步恢复下限（先移除活动规则，节点池按冷却时间自然回收）；复盘：实际峰值 vs 预估、弹性反应时间、需要回写的参数 |
+| T+1 | 逐步恢复下限（把调高的数值改回，节点池按冷却时间自然回收）；复盘：实际峰值 vs 预估、弹性反应时间、需要回写的参数 |
 
 ## 10. Phase 2
 
 - **Flink 聚合局与流水**：用 Flink（DLI 或自建）按局 / 按玩家做有状态聚合，替代 bet-record 逐条写库；稽核扣减、promotion 的有效投注改为消费 Flink 的聚合结果（按分钟 / 按局汇总）。消费者 Pod 数和共享库写入量会大幅下降，`bingo.round.settled` 的消息量也随之减少。
-- **流水保留与历史**：`wallet_txn` 只保留幂等窗口（建议 7 天），按雪花 id 从最老的一段分批限速删除（唯一幂等键必须全局，不能按日分区）；玩家查询走 TaurusDB 只读节点；报表、对账、风控分析走一套 StarRocks，Routine Load 直接消费 Kafka 事件流（只含 INSERT）。
-- **AI 容量预测服务**：用历史在线数 / spin 率 + 日历特征（发薪日、节假日、体育赛事、营销活动）预测未来每 15 分钟的负载，自动生成 CronHPA 规则与节点池预热计划；护栏：永远不超过 `maxReplicas` 与连接预算，活动类变更需人工审批。
+- **流水保留与历史**：`wallet_txn` 只保留幂等窗口（默认 30 天，不少于各厂商重试、迟到回滚、重新结算的最长窗口再加余量），按雪花 id 从最老的一段分批限速删除（唯一幂等键必须全局，不能按日分区）；玩家查询走 TaurusDB 只读节点；报表、对账、风控分析走一套 StarRocks，Routine Load 直接消费 Kafka 事件流（只含 INSERT）。
+- **AI 容量预测服务**：用历史在线数 / spin 率 + 日历特征（发薪日、节假日、体育赛事、营销活动）预测未来每 15 分钟的负载，自动生成晚高峰下限与节点池预热计划；护栏：永远不超过 `maxReplicaCount` 与连接预算，活动类变更需人工审批。
 
 ## 11. 待确认项（清单中的 `# verify`）
 
 | 位置 | 待确认 |
 |---|---|
-| `autoscaling-cronhpa.yaml` | CronHPA 能否驱动“指向 StatefulSet 的 HPA”；星期 / 日期列表和范围写法；控制器 / 节点时区是否为 UTC+8 |
 | `bingo-*.yaml`、`service-template.yaml` | `MaxUnavailableStatefulSet` 特性门控 |
-| `autoscaling-keda.yaml` | DMS SASL_SSL 端口；证书主机名校验（`unsafeSsl`） |
+| `autoscaling.yaml` | DMS SASL_SSL 端口；证书主机名校验（`unsafeSsl`） |
 | `01-networkpolicy.yaml` | 监控命名空间名 |
 | 本文 | 节点规格与 AZ 库存；节点 Ready 耗时；TaurusDB 各规格的 `max_connections` 与 Serverless TCU 上限；ELB L7 规格上限；DMS / DCS 规格 |
 
 ## 12. 参考文档（本次核实）
 
 - 工作负载伸缩原理：https://support.huaweicloud.com/usermanual-cce/cce_10_0290.html
-- CronHPA 定时策略：https://support.huaweicloud.com/usermanual-cce/cce_10_0415.html
 - CCE容器弹性引擎：https://support.huaweicloud.com/usermanual-cce/cce_10_0240.html
 - CCE集群弹性引擎：https://support.huaweicloud.com/usermanual-cce/cce_10_0154.html
 - 节点池弹性策略（HorizontalNodeAutoscaler）：https://support.huaweicloud.com/usermanual-cce/cce_10_0209.html

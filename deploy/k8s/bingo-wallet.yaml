@@ -1,14 +1,14 @@
 # bingo-wallet - the heart of the platform: every bet, payout, deposit and withdrawal moves money here.
 #
 # Sizing for 1,000,000 concurrent players (docs/capacity-1m.md; estimates until confirmed by load tests):
-#   ~250k wallet TPS at peak (design 400k) -> ~100 pods at peak, HPA 20..160, 4 vCPU / 8 GiB each.
-#   Scaling: HPA on CPU (50%: latency matters more than utilisation) + CCE CronHPA pre-warming for the known
-#   Philippine peaks (autoscaling-cronhpa.yaml).
+#   ~250k wallet TPS at peak (design 400k) -> ~100 pods at peak, 20..160 pods, 4 vCPU / 8 GiB each.
+#   Scaling: KEDA ScaledObject bingo-wallet (autoscaling.yaml): CPU 50% (latency matters more than utilisation)
+#   + an evening floor; min / floor / max per stage are in that file's header.
 #
-# - Independent workload with its own HPA and PodDisruptionBudget; never co-deployed with anything else.
+# - Independent workload with its own ScaledObject and PodDisruptionBudget; never co-deployed with anything else.
 # - StatefulSet (not Deployment) for stable ordinals: WORKER_ID (snowflake worker id, 0..1023) comes from the
 #   apps.kubernetes.io/pod-index label (Kubernetes >= 1.28), so every replica has a unique id, including pods
-#   added by the HPA. A second cluster writing to the same database (DR / blue-green) must use a disjoint range,
+#   added by the autoscaler. A second cluster writing to the same database (DR / blue-green) must use a disjoint range,
 #   e.g. spec.ordinals.start: 512 there (512 + maxReplicas 160 < 1024). No volumeClaimTemplates: the pods are
 #   otherwise stateless.
 # - Wallet DB: 1024 logical shards (hash of user_id) in 16 databases bingo_wallet_00..15 (64 shards each), at 1M
@@ -17,15 +17,14 @@
 #   wallet's application-sharding.yml. The shard -> database map never changes.
 #   Instance addresses: ConfigMap bingo-wallet-shards below; the shard -> instance map belongs to the wallet
 #   service configuration (Nacos), not to this manifest.
-# - CONNECTION BUDGET (the reason maxReplicas is a hard ceiling):
-#     every wallet pod holds ONE Hikari pool per physical TaurusDB instance (the logical shards living on that
-#     instance share it), so
-#       connections per TaurusDB primary = wallet pods x DB_POOL_SIZE
-#       expected peak : 100 pods x 8 =   800
-#       HPA ceiling   : 160 pods x 8 = 1,280   (+ Flink CDC, reconcile readers, DBA sessions)
-#       per pod       :  16 instances x 8 = 128 connections
-#     Keep "HPA ceiling" below ~70% of the instance's max_connections (verify the value for the chosen TaurusDB
-#     spec / Serverless TCU floor). Raising maxReplicas or DB_POOL_SIZE means re-doing this sum.
+# - CONNECTION BUDGET (the reason maxReplicaCount is a hard ceiling):
+#     every wallet pod holds ONE Hikari pool per shard DATABASE (bingo_wallet_NN; max DB_POOL_SIZE, 2 idle), so
+#       connections per TaurusDB primary = wallet pods x databases on that instance x DB_POOL_SIZE
+#       1M  (1 database per instance)  : 160 pods x 1 x 8 = 1,280 at the ceiling
+#       50k (all 16 on one instance)   :  12 pods x 16 x 8 = 1,536 at the ceiling
+#     (+ Flink CDC, DBA sessions). Keep the ceiling below ~70% of the instance's max_connections (verify for the
+#     chosen spec). Raising maxReplicaCount or DB_POOL_SIZE, or putting more databases on an instance, means
+#     re-doing this sum (per-stage values: autoscaling.yaml header).
 #     A pool of 8 is plenty: one wallet op holds a connection for ~1-3 ms, i.e. ~150 TPS per pod per instance
 #     needs < 1 connection on average; the pool only absorbs jitter.
 # - The pod count is capped by the DB connection budget, so the compute for the full ceiling is known and is
@@ -120,9 +119,9 @@ metadata:
     app.kubernetes.io/part-of: bingo
 spec:
   serviceName: bingo-wallet-headless
-  # replicas is owned by the HPA (minReplicas 20 = off-peak baseline). It is deliberately not set here:
-  # re-applying a manifest that contains spec.replicas would reset a scaled-out wallet (e.g. 100 -> 20 pods)
-  # in the middle of a peak. On first creation the HPA scales 1 -> 20 within one sync period (~15s).
+  # replicas is owned by KEDA (autoscaling.yaml). It is deliberately not set here: re-applying a manifest that
+  # contains spec.replicas would reset a scaled-out wallet in the middle of a peak. Without KEDA (test
+  # environment) the StatefulSet runs 1 pod.
   podManagementPolicy: Parallel      # ordinals are only used for WORKER_ID; start/stop pods in parallel
   updateStrategy:
     type: RollingUpdate
@@ -146,6 +145,9 @@ spec:
         prometheus.io/path: /actuator/prometheus
     spec:
       priorityClassName: bingo-critical
+      # SWR pull secret that CCE creates in every namespace (verify: kubectl -n bingo get secret default-secret)
+      imagePullSecrets:
+        - name: default-secret
       automountServiceAccountToken: false
       enableServiceLinks: false          # no *_SERVICE_HOST/*_PORT env vars leaking into Spring binding
       # preStop (15s) + Spring graceful shutdown (spring.lifecycle.timeout-per-shutdown-phase=20s) + margin
@@ -222,13 +224,10 @@ spec:
                 secretKeyRef:
                   name: bingo-wallet-db
                   key: DB_PASSWORD
-            # Pool size PER TaurusDB instance (see CONNECTION BUDGET in the header):
-            #   connections per primary = wallet pods x DB_POOL_SIZE  (100 x 8 = 800 at peak, 160 x 8 = 1,280 max)
-            # Read by bingo.shard.pool.max-pool-size (one Hikari pool of this size per shard database).
+            # Pool size PER shard database (see CONNECTION BUDGET in the header), read by
+            # bingo.shard.pool.max-pool-size. Test environment: 2.
             - name: DB_POOL_SIZE
               value: "8"
-            - name: XXL_JOB_EXECUTOR_PORT
-              value: "9102"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -266,10 +265,11 @@ spec:
             failureThreshold: 2
           lifecycle:
             preStop:
-              # Keep serving while endpoints / Nacos subscribers / load-balancer caches drop this pod,
-              # then SIGTERM starts Spring's graceful shutdown (in-flight requests complete).
+              # The marker makes the app de-register from Nacos at once (RegistryDrain); the pod keeps serving
+              # while Nacos subscribers (load-balancer cache ttl 5s) and the endpoints controller drop it, then
+              # SIGTERM starts Spring's graceful shutdown (in-flight requests complete).
               exec:
-                command: ["sh", "-c", "sleep 15"]
+                command: ["sh", "-c", "touch /tmp/draining; sleep 15"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -287,48 +287,6 @@ spec:
         - name: applogs
           emptyDir:
             sizeLimit: 1Gi
----
-# HPA = the only thing that sets the wallet's replica count. CronHPA (autoscaling-cronhpa.yaml) only moves
-# minReplicas (the floor) at known peak times; maxReplicas stays the DB-connection ceiling and no CronHPA
-# target may exceed it (a target above maxReplicas would make CronHPA raise maxReplicas).
-# Do not re-apply this HPA during a peak window: it resets minReplicas to 20 until the next CronHPA rule.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: bingo-wallet
-  namespace: bingo
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: StatefulSet
-    name: bingo-wallet
-  minReplicas: 20                    # off-peak baseline (~1/5 of peak); >= 6 per AZ
-  maxReplicas: 160                   # design capacity 400k TPS AND the DB connection ceiling (160 x 8 per primary)
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 50
-  behavior:
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      selectPolicy: Max
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 15
-        - type: Pods
-          value: 10
-          periodSeconds: 15
-    scaleDown:
-      stabilizationWindowSeconds: 600
-      selectPolicy: Min
-      policies:
-        - type: Percent
-          value: 10
-          periodSeconds: 60
 ---
 # Percentage so node drains (cluster autoscaler scale-down, node pool upgrades) finish in reasonable time at
 # 100+ pods; 10% of peak is covered by the 50% CPU target headroom. Rounds up, so at least 1.

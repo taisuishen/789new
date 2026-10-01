@@ -1,23 +1,23 @@
-# XXL-Job admin (scheduler + console), in namespace bingo: it calls the executors on 9101..9111, which only accept
-# in-namespace traffic (01-networkpolicy.yaml). Not exposed through any Ingress; open the console with
-#   kubectl -n bingo port-forward svc/xxl-job-admin 18081:8080     ->  http://127.0.0.1:18081/xxl-job-admin
+# XXL-Job admin (scheduler + console) in namespace bingo-infra (third-party image, runs as root; 00-namespace.yaml).
+# It calls the executors on 9101..9111 in namespace bingo, allowed by allow-xxl-job-admin in 01-networkpolicy.yaml.
+# Not exposed through any Ingress; open the console with
+#   kubectl -n bingo-infra port-forward svc/xxl-job-admin 18081:8080     ->  http://127.0.0.1:18081/xxl-job-admin
 # Change the default console account (admin / 123456) right after the first login.
 #
 # - Schema: the official v3.4.2 doc/db/tables_xxl_job.sql in database xxl_job on the shared TaurusDB instance
 #   (deploy/README.md §2).
-# - Image: mirror xuxueli/xxl-job-admin:3.4.2 into SWR (docker pull / tag / push); it runs as root, which the
-#   namespace's "baseline" pod security level allows.
-# - Secret xxl-job-admin-secret: DB_USER, DB_PASSWORD, XXL_JOB_TOKEN (same value as XXL_JOB_TOKEN in
-#   bingo-common-secret, which the executors use).
+# - Image: mirror xuxueli/xxl-job-admin:3.4.2 into SWR (docker pull / tag / push).
+# - Secret xxl-job-admin-secret (namespace bingo-infra): DB_USER, DB_PASSWORD, XXL_JOB_TOKEN (same value as
+#   XXL_JOB_TOKEN in bingo-common-secret, which the executors use; they refuse to start without one).
 # - Two replicas share the database (the admin coordinates through a lock table); cron expressions are evaluated
-#   in UTC+8 (TZ and -Duser.timezone).
+#   in UTC+8 (TZ and -Duser.timezone). Test environment: replicas 1.
 # Replace __REGISTRY__ and __TAURUSDB_SHARED_HOST__ before applying.
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: xxl-job-admin                # XXL_JOB_ADMIN=http://xxl-job-admin:8080 in 02-common-config.yaml
-  namespace: bingo
+  name: xxl-job-admin                # XXL_JOB_ADMIN=http://xxl-job-admin.bingo-infra:8080 in 02-common-config.yaml
+  namespace: bingo-infra
   labels:
     app.kubernetes.io/name: xxl-job-admin
 spec:
@@ -33,7 +33,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: xxl-job-admin
-  namespace: bingo
+  namespace: bingo-infra
   labels:
     app.kubernetes.io/name: xxl-job-admin
 spec:
@@ -46,6 +46,8 @@ spec:
       labels:
         app.kubernetes.io/name: xxl-job-admin
     spec:
+      imagePullSecrets:
+        - name: default-secret               # SWR pull secret created by CCE in every namespace
       nodeSelector:
         bingo.io/pool: general
       topologySpreadConstraints:

@@ -7,7 +7,7 @@
 # from the LAN. Credentials can be overridden through environment variables or a deploy/.env file.
 #
 #   host port  service
-#   3306       MySQL 8.4 (root / ${MYSQL_ROOT_PASSWORD:-root}; app user bingo / bingo from sql/00_databases.sql)
+#   3306       MySQL 8.4 (root / ${MYSQL_ROOT_PASSWORD:-root}; app user bingo / bingo from sql/99_local_dev_account.sql)
 #   6379       Redis 7.4
 #
 # Time zone: every container runs on UTC+8 (TZ=Asia/Manila, no DST); MySQL uses default-time-zone=+08:00.
@@ -34,7 +34,7 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
-      # 00_databases.sql .. 11_kyc.sql (+ 90_xxl_job.sql, see README) run once, on an EMPTY data volume.
+      # 00_databases.sql .. 11_kyc.sql (+ 90_xxl_job.sql, see README) and 99_local_dev_account.sql run once, on an EMPTY data volume.
       - ./sql:/docker-entrypoint-initdb.d:ro
       - mysql-data:/var/lib/mysql
     healthcheck:

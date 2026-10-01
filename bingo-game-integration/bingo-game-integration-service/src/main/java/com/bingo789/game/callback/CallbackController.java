@@ -20,7 +20,10 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Single entry point for all provider callbacks: {@code /callback/{provider}/{action}}.
+ * Single entry point for all provider callbacks: {@code /callback/{provider}/{action...}}. The action is the rest of
+ * the path after the provider code and may have several segments or a suffix ({@code transaction/game/bet},
+ * {@code Cash/TransferInOut}, {@code bet.html}); it is empty for providers that post every call to one URL and name
+ * the action inside the (encrypted) body. Adapters interpret it.
  * Served only on the dedicated callback domain / ELB / node pool, physically isolated from player traffic,
  * so that player-side floods or attacks cannot disturb in-flight bets and payouts.
  */
@@ -33,10 +36,9 @@ public class CallbackController {
     private final CallbackDispatcher dispatcher;
     private final GameIntegrationProperties properties;
 
-    @RequestMapping(value = "/callback/{provider}/{action}", method = {RequestMethod.POST, RequestMethod.GET})
-    public ResponseEntity<byte[]> callback(@PathVariable("provider") String provider,
-                                           @PathVariable("action") String action,
-                                           HttpServletRequest http) throws IOException {
+    @RequestMapping(value = {"/callback/{provider}", "/callback/{provider}/**"}, method = {RequestMethod.POST, RequestMethod.GET})
+    public ResponseEntity<byte[]> callback(@PathVariable("provider") String provider, HttpServletRequest http) throws IOException {
+        String action = actionOf(http.getRequestURI(), provider);
         // read the raw stream ourselves: signatures cover the exact bytes, and Spring would rebuild form bodies
         byte[] body = http.getInputStream().readNBytes(MAX_BODY_BYTES + 1);
         if (body.length > MAX_BODY_BYTES) {
@@ -48,6 +50,17 @@ public class CallbackController {
         return ResponseEntity.status(response.httpStatus())
                 .contentType(MediaType.parseMediaType(response.contentType()))
                 .body(response.body());
+    }
+
+    /** Everything after {@code /callback/<provider>/}, as received (still URL-encoded). */
+    static String actionOf(String requestUri, String provider) {
+        String prefix = "/callback/" + provider;
+        int start = requestUri.indexOf(prefix);
+        if (start < 0) {
+            return "";
+        }
+        String rest = requestUri.substring(start + prefix.length());
+        return rest.startsWith("/") ? rest.substring(1) : rest;
     }
 
     private static Map<String, String> headers(HttpServletRequest http) {

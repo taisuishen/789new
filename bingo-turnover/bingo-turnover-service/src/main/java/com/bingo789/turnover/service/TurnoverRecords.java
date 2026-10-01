@@ -19,6 +19,9 @@ import java.time.LocalDate;
 @RequiredArgsConstructor
 public class TurnoverRecords {
 
+    /** reason of a negative WAGER row. */
+    static final String ROUND_REVISED = "ROUND_REVISED";
+
     private final SnowflakeIdGenerator idGenerator;
 
     public TurnoverRecord created(TurnoverBucket bucket, String operator) {
@@ -31,17 +34,31 @@ public class TurnoverRecords {
     /** @param seq the bucket's position in the round's waterfall */
     public TurnoverRecord wagered(SettledRound round, int seq, Take take) {
         TurnoverRecord record = base(take.bucket(), RecordType.WAGER, take.amount(), round.betDate());
-        record.setUserLine(round.userLine());
-        record.setRoundKey(round.roundKey());
-        record.setSeq(seq);
-        record.setProviderCode(round.providerCode());
-        record.setGameCode(round.gameCode());
-        record.setGameType(round.gameType());
+        roundFields(record, round, seq);
         if (take.bucket().getStatus() != BucketStatus.ACTIVE) {
             record.setReason(take.bucket().getCloseReason().name());
             record.setOperator(take.bucket().getClosedBy());
         }
         return record;
+    }
+
+    /** A round revision took {@code amount} of valid bet back from the bucket (stored as a negative WAGER). */
+    public TurnoverRecord takenBack(SettledRound round, int seq, TurnoverBucket bucket, BigDecimal amount) {
+        TurnoverRecord record = base(bucket, RecordType.WAGER, amount.negate(), round.betDate());
+        roundFields(record, round, seq);
+        record.setReason(ROUND_REVISED);
+        record.setOperator(Waterfall.SYSTEM);
+        return record;
+    }
+
+    private static void roundFields(TurnoverRecord record, SettledRound round, int seq) {
+        record.setUserLine(round.userLine());
+        record.setRoundKey(round.roundKey());
+        record.setRoundRevision(round.revision());
+        record.setSeq(seq);
+        record.setProviderCode(round.providerCode());
+        record.setGameCode(round.gameCode());
+        record.setGameType(round.gameType());
     }
 
     /** @param dropped the remainder that no longer has to be wagered */

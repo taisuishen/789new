@@ -64,9 +64,7 @@ public class RoundService {
                     delta.betCount(), delta.payoutCount(), eventAt);
             applyInMemory(round, delta, eventAt);
             if (round.getStatus().isTerminal()) {
-                // TODO: publish a correction event (needs a revision field on RoundSettledEvent)
-                log.warn("late {} txn {} applied to {} round {}/{} of user {}; RoundSettledEvent not re-sent",
-                        effect, event.id(), round.getStatus(), round.getProviderCode(), round.getRoundId(), round.getUserId());
+                revise(round, effect, event);
                 return;
             }
         }
@@ -154,6 +152,7 @@ public class RoundService {
         round.setLastEventAt(eventAt);
         round.setResolveAttempts(0);
         round.setEventPublished(false);
+        round.setRevision(0);
         // A duplicate key here means another consumer wrote the round concurrently (partition handover):
         // the exception rolls back this transaction and the record is retried, finding the round.
         roundMapper.insert(round);
@@ -177,12 +176,29 @@ public class RoundService {
         return event.roundClosed() ? RoundStatus.SETTLED : null;
     }
 
+    /**
+     * A ledger row that arrives after the round closed changes its settled figures: the round is published again as
+     * the next revision, and the consumers (turnover, promotion, StarRocks) replace what they applied for it. A round
+     * whose bets and payouts are all reversed becomes CANCELLED.
+     */
+    private void revise(GameRound round, RoundEffect effect, WalletTxnEvent event) {
+        RoundStatus status = round.getBetCount() <= 0 && round.getPayoutCount() <= 0 ? RoundStatus.CANCELLED : RoundStatus.SETTLED;
+        if (roundMapper.revise(round.getId(), round.getRoundDate(), status.name()) == 1) {
+            round.setStatus(status);
+            round.setRevision(round.getRevision() == null ? 2 : round.getRevision() + 1);
+            log.info("late {} txn {} revised round {}/{} of user {}: {} revision {}", effect, event.id(),
+                    round.getProviderCode(), round.getRoundId(), round.getUserId(), status, round.getRevision());
+            publisher.publishAfterCommit(round);
+        }
+    }
+
     /** @param balanceAfter balance after the wallet txn that closed the round; null when none did */
     private void close(GameRound round, RoundStatus status, LocalDateTime at, BigDecimal balanceAfter) {
         if (roundMapper.close(round.getId(), round.getRoundDate(), status.name(), at, balanceAfter) == 1) {
             round.setStatus(status);
             round.setSettledAt(at);
             round.setBalanceAfter(balanceAfter);
+            round.setRevision(1);
             publisher.publishAfterCommit(round);
         }
     }

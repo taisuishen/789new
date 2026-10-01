@@ -1,6 +1,7 @@
 package com.bingo789.user.service;
 
 import com.bingo789.common.core.BizException;
+import com.bingo789.common.core.crypto.PiiCipher;
 import com.bingo789.common.core.line.UserLine;
 import com.bingo789.common.mybatis.DuplicateKeys;
 import com.bingo789.user.UserErrorCode;
@@ -51,6 +52,7 @@ public class AccountService {
     private final ComplianceProperties compliance;
     private final SessionProperties sessionProperties;
     private final TransactionTemplate transactionTemplate;
+    private final PiiCipher pii;
     private final Clock clock;
 
     public RegisterResponse register(RegisterRequest request) {
@@ -64,16 +66,20 @@ public class AccountService {
         BizException.check(compliance.isCurrencyAllowed(currency), UserErrorCode.CURRENCY_NOT_SUPPORTED);
         LocalDate today = LocalDate.now(clock.withZone(compliance.zone()));
         BizException.check(Period.between(request.dateOfBirth(), today).getYears() >= compliance.minAge(), UserErrorCode.UNDERAGE);
-        checkNotRegistered(username, email, phone);
+        String emailHash = pii.blindIndex(email);
+        String phoneHash = pii.blindIndex(phone);
+        checkNotRegistered(username, emailHash, phoneHash);
         UserAccount agent = referringAgent(request.agentId());
         String passwordHash = passwordService.hash(request.password());
 
         UserAccount account = new UserAccount();
         account.setUsername(username);
         account.setPasswordHash(passwordHash);
-        account.setEmail(email);
-        account.setPhone(phone);
-        account.setDateOfBirth(request.dateOfBirth());
+        account.setEmail(pii.encrypt(email));
+        account.setEmailHash(emailHash);
+        account.setPhone(pii.encrypt(phone));
+        account.setPhoneHash(phoneHash);
+        account.setDateOfBirth(pii.encrypt(request.dateOfBirth().toString()));
         account.setCountryCode(country);
         account.setDefaultCurrency(currency);
         account.setStatus(AccountStatus.ACTIVE);
@@ -140,18 +146,20 @@ public class AccountService {
         if (sessionToken != null && (rg == null || rg.getSessionLimitMinutes() == null)) {
             sessionService.refresh(userId, sessionToken);
         }
-        return new MeResponse(account.getId(), account.getUsername(), account.getEmail(), account.getPhone(),
-                account.getDateOfBirth(), account.getCountryCode(), account.getDefaultCurrency(),
+        String dateOfBirth = pii.decrypt(account.getDateOfBirth());
+        return new MeResponse(account.getId(), account.getUsername(), pii.decrypt(account.getEmail()),
+                pii.decrypt(account.getPhone()), dateOfBirth == null ? null : LocalDate.parse(dateOfBirth),
+                account.getCountryCode(), account.getDefaultCurrency(),
                 account.getStatus(), account.getKycStatus(), status.canPlay(), status.canDeposit(), status.canWithdraw(),
                 status.reason(), status.selfExcludedUntil());
     }
 
-    private void checkNotRegistered(String username, String email, String phone) {
+    private void checkNotRegistered(String username, String emailHash, String phoneHash) {
         // Friendly errors only; the unique indexes are the real guard.
-        List<UserAccount> existing = accountMapper.selectConflicts(username, email, phone);
+        List<UserAccount> existing = accountMapper.selectConflicts(username, emailHash, phoneHash);
         BizException.check(existing.stream().noneMatch(a -> username.equalsIgnoreCase(a.getUsername())), UserErrorCode.USERNAME_TAKEN);
-        BizException.check(existing.stream().noneMatch(a -> email.equalsIgnoreCase(a.getEmail())), UserErrorCode.EMAIL_TAKEN);
-        BizException.check(existing.stream().noneMatch(a -> phone.equals(a.getPhone())), UserErrorCode.PHONE_TAKEN);
+        BizException.check(existing.stream().noneMatch(a -> emailHash.equals(a.getEmailHash())), UserErrorCode.EMAIL_TAKEN);
+        BizException.check(existing.stream().noneMatch(a -> phoneHash.equals(a.getPhoneHash())), UserErrorCode.PHONE_TAKEN);
     }
 
     /**

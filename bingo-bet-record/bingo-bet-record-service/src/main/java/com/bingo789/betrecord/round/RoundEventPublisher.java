@@ -30,8 +30,11 @@ import java.util.concurrent.Executors;
  * <p>
  * Delivery is at-least-once: game_round.event_published is set when Kafka acknowledges the send, and
  * RoundEventRepublishJob re-sends terminal rounds that were never acknowledged (crash right after commit,
- * broker outage). A crash between the acknowledgement and the flag update therefore produces a duplicate,
- * so downstream consumers MUST dedupe by (providerCode, roundId, userId).
+ * broker outage). A crash between the acknowledgement and the flag update therefore produces a duplicate.
+ * <p>
+ * Every event is the round's full current state plus its {@code revision} (1 = first close, +1 per later change).
+ * Consumers key on (providerCode, roundId, userId), ignore a revision they have already applied (or an older one)
+ * and replace the effect of an earlier revision with the new one.
  */
 @Slf4j
 @Component
@@ -68,6 +71,7 @@ public class RoundEventPublisher {
         long id = round.getId();
         LocalDate roundDate = round.getRoundDate();
         RoundSettledEvent event = toEvent(round);
+        int revision = event.revision();
         CompletableFuture<SendResult<String, String>> send;
         try {
             send = kafkaTemplate.send(Topics.ROUND_SETTLED, String.valueOf(event.userId()), JsonUtils.toJson(event));
@@ -83,7 +87,7 @@ public class RoundEventPublisher {
                 return;
             }
             try {
-                shards.forUserWrite(event.userId(), () -> roundMapper.markPublished(id, roundDate));
+                shards.forUserWrite(event.userId(), () -> roundMapper.markPublished(id, roundDate, revision));
             } catch (RuntimeException e) {
                 log.warn("could not flag round {} as published; it will be re-sent (duplicate)", id, e);
             }
@@ -110,7 +114,8 @@ public class RoundEventPublisher {
                 round.getBalanceAfter(),
                 round.getStatus().name(),
                 toInstant(round.getFirstEventAt()),
-                toInstant(round.getSettledAt()));
+                toInstant(round.getSettledAt()),
+                round.getRevision());
     }
 
     private static Instant toInstant(LocalDateTime local) {

@@ -16,6 +16,11 @@ public enum WalletResultCode {
     BET_CANCELLED,
     /** Rollback/adjust target that must exist does not. */
     TXN_NOT_FOUND,
+    /**
+     * Rollback of a bet whose round already paid it out (a live PAYOUT of the round that settles this bet). Refunding
+     * the stake would leave the player the win AND the stake: reverse the payout first (void of a settled round).
+     */
+    BET_SETTLED,
     INVALID_REQUEST;
 
     public boolean isSuccess() {

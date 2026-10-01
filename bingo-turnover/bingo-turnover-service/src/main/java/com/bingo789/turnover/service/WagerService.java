@@ -3,6 +3,7 @@ package com.bingo789.turnover.service;
 import com.bingo789.common.mq.event.RoundSettledEvent;
 import com.bingo789.common.mybatis.shard.ShardTemplate;
 import com.bingo789.turnover.domain.BucketStatus;
+import com.bingo789.turnover.domain.CloseReason;
 import com.bingo789.turnover.domain.TurnoverBucket;
 import com.bingo789.turnover.domain.TurnoverRecord;
 import com.bingo789.turnover.mapper.TurnoverBucketMapper;
@@ -15,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -36,6 +38,12 @@ import java.util.Set;
  * Kafka keys the stream by userId, so one player's rounds are applied in order by a single consumer. Latency is the
  * pipeline's (wallet commit -> CDC -> bet-record -> bingo.round.settled -> here), normally seconds; a withdrawal
  * checked in that gap sees a slightly higher outstanding amount, i.e. errs towards review, never towards release.
+ * <p>
+ * Round revisions (a late rollback / payout after the round was published, RoundSettledEvent.revision > 1) are rare
+ * and applied one by one after the batch: what the round gave the buckets so far (its WAGER rows) is moved to the new
+ * valid bet. More is filled through the waterfall; less is taken back from the buckets that took it, newest first,
+ * reopening a bucket the round had completed. A bucket that was cleared or closed by an operator is not touched: that
+ * part is an ALERT for manual review. A revision at or below the last one applied to the round is ignored.
  */
 @Slf4j
 @Service
@@ -51,25 +59,32 @@ public class WagerService {
 
     public void applySettledRounds(List<RoundSettledEvent> events) {
         Map<Long, List<SettledRound>> byUser = new LinkedHashMap<>();
+        List<SettledRound> revisions = new ArrayList<>();
         for (RoundSettledEvent event : events) {
-            SettledRound round = SettledRound.of(event);
-            if (round != null) {
+            SettledRound round = event.isRevision() ? SettledRound.revisionOf(event) : SettledRound.of(event);
+            if (round == null) {
+                continue;
+            }
+            if (event.isRevision()) {
+                revisions.add(round);
+            } else {
                 byUser.computeIfAbsent(round.userId(), k -> new ArrayList<>()).add(round);
             }
         }
-        if (byUser.isEmpty()) {
-            return;
-        }
-        Set<Long> withBuckets = usersWithActiveBuckets(byUser.keySet());
-        if (withBuckets.isEmpty()) {
+        if (byUser.isEmpty() && revisions.isEmpty()) {
             return;
         }
         Rules rules = settingService.rules();
+        Set<Long> withBuckets = byUser.isEmpty() ? Set.of() : usersWithActiveBuckets(byUser.keySet());
         for (Map.Entry<Long, List<SettledRound>> player : byUser.entrySet()) {
             long userId = player.getKey();
             if (withBuckets.contains(userId)) {
                 shards.forUserWrite(userId, () -> transactionTemplate.execute(tx -> applyPlayer(userId, player.getValue(), rules)));
             }
+        }
+        // after the first settlements of the batch: a revision may follow its round's first settlement in one batch
+        for (SettledRound revision : revisions) {
+            shards.forUserWrite(revision.userId(), () -> transactionTemplate.execute(tx -> applyRevision(revision, rules)));
         }
     }
 
@@ -118,10 +133,95 @@ public class WagerService {
                 }
             }
         }
+        write(userId, changes, touched.values());
+        return null;
+    }
+
+    private Void applyRevision(SettledRound round, Rules rules) {
+        List<TurnoverRecord> applied = recordMapper.selectRoundWagers(round.roundKey());
+        int lastRevision = applied.stream().mapToInt(r -> r.getRoundRevision() == null ? 1 : r.getRoundRevision()).max().orElse(0);
+        if (round.revision() <= lastRevision) {
+            return null;
+        }
+        BigDecimal given = applied.stream().map(TurnoverRecord::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal target = round.validBet();
+        Map<Long, TurnoverBucket> touched = new LinkedHashMap<>();
+        List<TurnoverRecord> changes = new ArrayList<>();
+        if (target.compareTo(given) > 0) {
+            List<TurnoverBucket> buckets = bucketMapper.selectActive(round.userId());
+            Rule rule = rules.of(round.userLine(), round.currency());
+            List<Take> takes = Waterfall.fill(buckets, round.withValidBet(target.subtract(given)), rule.completeBelowRemaining());
+            for (int seq = 0; seq < takes.size(); seq++) {
+                Take take = takes.get(seq);
+                touched.put(take.bucket().getId(), take.bucket());
+                changes.add(records.wagered(round, seq, take));
+            }
+            write(round.userId(), changes, touched.values());
+        } else if (target.compareTo(given) < 0) {
+            takeBack(round, applied, given.subtract(target), changes, touched);
+            if (!changes.isEmpty()) {
+                recordMapper.insertBatch(changes);
+            }
+            for (TurnoverBucket bucket : touched.values()) {
+                if (bucketMapper.updateRevised(bucket) == 0) {
+                    throw new IllegalStateException("concurrent update of wagering requirement " + bucket.getId());
+                }
+            }
+        }
+        log.info("round {} revision {} of user {}: valid bet given to requirements {} -> {}", round.roundKey(),
+                round.revision(), round.userId(), given.toPlainString(), target.toPlainString());
+        return null;
+    }
+
+    /** Newest contribution first; a bucket completed by the round is reopened, a cleared / manual one is left alone. */
+    private void takeBack(SettledRound round, List<TurnoverRecord> applied, BigDecimal excess,
+                          List<TurnoverRecord> changes, Map<Long, TurnoverBucket> touched) {
+        Map<Long, BigDecimal> byBucket = new LinkedHashMap<>();
+        for (TurnoverRecord record : applied.reversed()) {
+            byBucket.merge(record.getBucketId(), record.getAmount(), BigDecimal::add);
+        }
+        BigDecimal left = excess;
+        int seq = 0;
+        for (Map.Entry<Long, BigDecimal> entry : byBucket.entrySet()) {
+            if (left.signum() <= 0) {
+                break;
+            }
+            BigDecimal back = left.min(entry.getValue());
+            if (back.signum() <= 0) {
+                continue;
+            }
+            TurnoverBucket bucket = bucketMapper.selectById(entry.getKey());
+            if (bucket == null || !reversible(bucket)) {
+                log.error("ALERT round {} revision {}: {} of valid bet taken by wagering requirement {} ({}) cannot be "
+                                + "taken back automatically", round.roundKey(), round.revision(), back.toPlainString(),
+                        entry.getKey(), bucket == null ? "missing" : bucket.getStatus() + "/" + bucket.getCloseReason());
+                continue;
+            }
+            bucket.setAchievedAmount(bucket.getAchievedAmount().subtract(back));
+            if (bucket.getStatus() == BucketStatus.COMPLETED) {
+                bucket.setStatus(BucketStatus.ACTIVE);
+                bucket.setCloseReason(null);
+                bucket.setClosedBy(null);
+                bucket.setClosedAt(null);
+            }
+            touched.put(bucket.getId(), bucket);
+            changes.add(records.takenBack(round, seq++, bucket, back));
+            left = left.subtract(back);
+        }
+    }
+
+    /** ACTIVE, or COMPLETED by the waterfall itself (not cleared, voided or closed by an operator). */
+    private static boolean reversible(TurnoverBucket bucket) {
+        return bucket.getStatus() == BucketStatus.ACTIVE
+                || bucket.getStatus() == BucketStatus.COMPLETED && Waterfall.SYSTEM.equals(bucket.getClosedBy())
+                && (bucket.getCloseReason() == CloseReason.FULFILLED || bucket.getCloseReason() == CloseReason.REMAINING_BELOW_THRESHOLD);
+    }
+
+    private void write(long userId, List<TurnoverRecord> changes, Iterable<TurnoverBucket> touched) {
         if (!changes.isEmpty()) {
             recordMapper.insertBatch(changes);
         }
-        for (TurnoverBucket bucket : touched.values()) {
+        for (TurnoverBucket bucket : touched) {
             if (bucketMapper.updateState(bucket) == 0) {
                 // an operator / another consumer changed it meanwhile: roll back, the batch is redelivered
                 throw new IllegalStateException("concurrent update of wagering requirement " + bucket.getId());
@@ -131,6 +231,5 @@ public class WagerService {
                         bucket.getSourceType(), bucket.getSourceNo(), userId, bucket.getCloseReason());
             }
         }
-        return null;
     }
 }

@@ -3,8 +3,8 @@ USE bingo_kyc;
 -- KYC submissions (identity document + selfie) verified by the RunPod serverless worker (bbwave_face).
 -- All DATETIME columns hold UTC+8 wall-clock time.
 -- PII: the images live in a PRIVATE OBS bucket (only the object keys are stored here); result_json holds the OCR
--- fields (name, ID number, birth date). Field-level encryption with DEW is required before go-live (TODO), and
--- retention follows the licence / Data Privacy Act (RA 10173).
+-- fields (name, ID number, birth date) and is stored ENCRYPTED (PiiCipher, keys in DEW). Retention follows the
+-- licence / Data Privacy Act (RA 10173).
 
 -- status:
 --   0 待提交       submission to RunPod failed; kycSubmitRetryJob resubmits (backoff) until the timeout
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS kyc_record (
     gender          CHAR(1)       NULL COMMENT 'm / f / u (selfie)',
     face_distance   DECIMAL(8,4)  NULL,
     face_threshold  DECIMAL(8,4)  NULL,
-    result_json     JSON          NULL COMMENT 'full worker report (PII: OCR fields)',
+    result_json     MEDIUMTEXT    NULL COMMENT 'full worker report, encrypted (PiiCipher; PII: OCR fields)',
     user_synced     TINYINT       NOT NULL DEFAULT 0 COMMENT '1 once user-service holds the kyc_status of the current status',
     submitted_at    DATETIME(3)   NULL COMMENT 'last successful /run',
     completed_at    DATETIME(3)   NULL,

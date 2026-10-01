@@ -39,6 +39,9 @@ public class BingoMqAutoConfiguration {
     /** Name of the listener container factory for business events: {@code containerFactory = BIZ_EVENTS}. */
     public static final String BIZ_EVENTS = "bizEventListenerFactory";
 
+    /** 1 + 2 + 4 + ... + 32 s, then one attempt a minute: the 15th attempt is about 10 minutes after the first. */
+    static final int ALERT_AFTER_ATTEMPTS = 15;
+
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.springframework.jdbc.core.JdbcTemplate")
     @ConditionalOnProperty(prefix = "bingo.outbox", name = "enabled", havingValue = "true")
@@ -59,10 +62,16 @@ public class BingoMqAutoConfiguration {
     }
 
     /**
-     * Listener factory for business events (one record at a time). A failing record is retried with back-off
-     * (1 s doubling up to 1 min, about 10 minutes in total), then published to {@code <topic>.DLT} with an ALERT log
-     * and the partition moves on; unparseable records go to the DLT at once. Replay a DLT record by re-publishing it
-     * to its topic: every consumer is idempotent on the message key.
+     * Listener factory for business events (one record at a time).
+     * <ul>
+     *   <li>A failing record is retried until it succeeds (1 s doubling up to 1 min): a deposit, withdrawal or bonus
+     *   event that is skipped is a missing wagering requirement or a wrong balance, so the partition waits instead.
+     *   From the {@value #ALERT_AFTER_ATTEMPTS}th attempt (~10 minutes) every failure is logged as ALERT; fix the cause
+     *   (usually a dependency outage or a bug) and the record goes through on its own.</li>
+     *   <li>Only records that can never succeed, i.e. unparseable payloads, go to {@code <topic>.DLT} at once (ALERT),
+     *   and the partition moves on. Replay a DLT record by re-publishing it to its topic: every consumer is idempotent
+     *   on the message key.</li>
+     * </ul>
      */
     @Slf4j
     @Configuration(proxyBeanMethods = false)
@@ -77,13 +86,19 @@ public class BingoMqAutoConfiguration {
                 KafkaTemplate<Object, Object> kafkaTemplate) {
             ExponentialBackOff backOff = new ExponentialBackOff(1_000L, 2.0);
             backOff.setMaxInterval(60_000L);
-            backOff.setMaxElapsedTime(10 * 60_000L);
+            backOff.setMaxElapsedTime(Long.MAX_VALUE);
             DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
             DefaultErrorHandler errorHandler = new DefaultErrorHandler((record, e) -> {
-                log.error("ALERT business event parked on {}.DLT after retries: key={}", record.topic(), record.key(), e);
+                log.error("ALERT unparseable business event parked on {}.DLT: key={}", record.topic(), record.key(), e);
                 recoverer.accept(record, e);
             }, backOff);
             errorHandler.addNotRetryableExceptions(JacksonException.class);
+            errorHandler.setRetryListeners((record, e, deliveryAttempt) -> {
+                if (deliveryAttempt >= ALERT_AFTER_ATTEMPTS) {
+                    log.error("ALERT business event on {}-{}@{} still failing after {} attempts, key={}", record.topic(),
+                            record.partition(), record.offset(), deliveryAttempt, record.key(), e);
+                }
+            });
 
             // spring.kafka.listener.* (auto-startup, concurrency, ...) as for Boot's default factory, then our policy
             ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();

@@ -88,7 +88,7 @@ public class DemoProviderAdapter implements ProviderAdapter, TransferCapable {
     }
 
     @Override
-    public WalletCommand parse(CallbackRequest request) {
+    public WalletCommand parse(CallbackRequest request, ProviderClient client) {
         try {
             return switch (request.action()) {
                 case "authenticate" -> {
@@ -149,7 +149,7 @@ public class DemoProviderAdapter implements ProviderAdapter, TransferCapable {
             case PLAYER_LOCKED -> "PLAYER_BLOCKED";
             // DEMO retries the win later, by which time the bet may have arrived
             case BET_NOT_FOUND -> "BET_NOT_FOUND";
-            case TXN_CANCELLED -> "TRANSACTION_CANCELLED";
+            case TXN_CANCELLED, BET_SETTLED -> "TRANSACTION_CANCELLED";
             // DEMO spec: "nothing to roll back" is a success, otherwise the provider retries forever
             case TXN_NOT_FOUND -> command instanceof WalletCommand.Rollback ? "OK" : "TRANSACTION_NOT_FOUND";
             case INVALID_REQUEST -> "INVALID_REQUEST";

@@ -11,10 +11,14 @@
 #      A must keep its binlog for longer than the full copy takes. Pause walletTxnRetentionJob until step 4.
 #      Wait until the lag stays below a second and the DRS data comparison passes.
 #   3. At low traffic: publish migrating-shards: ["512-1023"] (writes of those players answer "retry"; providers retry
-#      with the same transaction id, idempotency prevents double debits), wait until the DRS lag is 0 (seconds), then
-#      publish the routes 512-1023 -> ds08b..ds15b and clear migrating-shards in ONE Nacos change.
-#   4. Start the Flink CDC job on B from the cutover time (scan.startup.mode = timestamp: rows copied by DRS must not
-#      become new ledger events), stop DRS, resume the jobs.
+#      with the same transaction id, idempotency prevents double debits). Wait until BOTH the DRS lag is 0 AND the
+#      Flink CDC job of A has emitted everything written before the freeze (its source lag metric is ~0), usually
+#      seconds. Note that moment as T_sync and stop DRS. Then publish the routes 512-1023 -> ds08b..ds15b and clear
+#      migrating-shards in ONE Nacos change.
+#   4. Start the Flink CDC job on B with scan.startup.mode = timestamp, scan.startup.timestamp-millis = T_sync: it
+#      emits every write after the flip but none of the rows DRS copied (those were applied before T_sync). Because A
+#      had finished those players' events before the flip, each player's events stay in order on the topic. Resume
+#      the paused jobs.
 #   5. After verification drop bingo_wallet_08..15 on A. Optional tidy-up at a later release: point
 #      WALLET_DB_HOST_08..15 at B, route back to ds08..ds15 (same databases, no freeze needed), remove ds08b..ds15b.
 # The first instance keeps bingo_wallet_00: it also holds the global tables (global-datasource: ds00).

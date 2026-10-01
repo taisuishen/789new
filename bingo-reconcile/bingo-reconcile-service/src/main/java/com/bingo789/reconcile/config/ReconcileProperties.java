@@ -18,6 +18,7 @@ import java.util.Set;
  * @param revenueShare      provider code -> revenue share rate (0.12 = 12% of GGR)
  * @param excludedProviders providers whose game transactions never reach our ledger (transfer-wallet mode);
  *                          comparing them bet-by-bet would raise a diff every hour
+ * @param dw                StarRocks (bingo_dw), the only source of the figures compared and reported here
  */
 @ConfigurationProperties("bingo.reconcile")
 public record ReconcileProperties(
@@ -26,7 +27,8 @@ public record ReconcileProperties(
         @DefaultValue("+08:00") String reportZone,
         Map<String, BigDecimal> revenueShare,
         Set<String> excludedProviders,
-        @DefaultValue Rtp rtp) {
+        @DefaultValue Rtp rtp,
+        @DefaultValue Dw dw) {
 
     public ReconcileProperties {
         revenueShare = revenueShare == null ? Map.of() : Map.copyOf(revenueShare);
@@ -38,6 +40,15 @@ public record ReconcileProperties(
 
     public ZoneId reportZoneId() {
         return ZoneId.of(reportZone);
+    }
+
+    /**
+     * StarRocks FE over the MySQL protocol (port 9030), read-only account.
+     *
+     * @param url      e.g. jdbc:mysql://fe-host:9030/bingo_dw?connectTimeout=3000&socketTimeout=600000
+     * @param poolSize the jobs run one at a time per pod; a few connections are plenty
+     */
+    public record Dw(String url, String username, String password, @DefaultValue("4") int poolSize) {
     }
 
     /**

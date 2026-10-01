@@ -54,7 +54,9 @@ public class ProviderRegistry {
             if (config.ipWhitelistEnabled() && config.ipWhitelist().isEmpty()) {
                 log.warn("provider {} has an empty IP whitelist: all callbacks will be refused", code);
             }
-            ProviderClient client = new ProviderClient(code, config, secretResolver.resolve(config.secret()),
+            Map<String, String> secrets = new HashMap<>();
+            config.secrets().forEach((name, ref) -> secrets.put(name, secretResolver.resolve(ref)));
+            ProviderClient client = new ProviderClient(code, config, secretResolver.resolve(config.secret()), secrets,
                     restClient(config), bulkhead(code, config), circuitBreaker(code, config, healthNotifier));
             built.put(code, new ProviderRuntime(code, config, adapter, client, CidrMatcher.of(config.ipWhitelist())));
             log.info("provider {} ready: adapter={}, walletMode={}", code, adapterName, config.walletMode());

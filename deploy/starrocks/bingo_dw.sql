@@ -4,9 +4,11 @@
 -- read-only nodes of their shard (retention window).
 --
 --   bingo.wallet.txn     -> wallet_txn     (ledger; INSERT-only, the CDC job filters row_kind = '+I')
---   bingo.round.settled  -> game_round     (settled / cancelled rounds, republished at least once)
---   bingo.provider.bet   -> provider_bet   (provider bet history, re-pulled records overwrite)
--- Primary Key tables: redeliveries overwrite the same row, so sums stay exact.
+--   bingo.round.settled  -> game_round     (settled / cancelled rounds; a later revision of a round replaces it)
+--   bingo.provider.bet   -> provider_bet   (provider bet history; a re-settled record is re-published and replaces it)
+-- Primary Key tables: redeliveries overwrite the same row, so sums stay exact under at-least-once delivery (Flink
+-- CDC, the round republish job). This is why bingo-reconcile reads its figures from here (ReconcileDw) instead of
+-- aggregating the streams itself; it connects with the read-only account __REPORT_RO_USER__ (FE port 9030).
 -- Dimensions (players, agents, lines, deposits, promotions) are read live through a JDBC catalog, not copied.
 --
 -- Times: every *_at column is UTC+8 wall-clock time (platform convention). The ledger events carry
@@ -63,7 +65,8 @@ CREATE TABLE IF NOT EXISTS game_round (
     payout_amount DECIMAL(20, 4) NOT NULL,
     valid_bet     DECIMAL(20, 4) NOT NULL,
     status        VARCHAR(16)    NOT NULL COMMENT 'SETTLED / CANCELLED',
-    bet_at        DATETIME       NULL COMMENT 'UTC+8, first bet of the round'
+    bet_at        DATETIME       NULL COMMENT 'UTC+8, first bet of the round',
+    revision      INT            NOT NULL COMMENT 'RoundSettledEvent.revision; the load keeps the highest'
 )
 PRIMARY KEY (settled_at, provider_code, round_id, user_id)
 PARTITION BY date_trunc('day', settled_at)
@@ -94,6 +97,8 @@ PROPERTIES ("replication_num" = "3", "partition_live_number" = "400");
 -- DMS for Kafka over SASL_SSL: a dedicated read-only DMS user; the DMS CA certificate uploaded once with
 --   CREATE FILE "dms_ca.pem" IN bingo_dw PROPERTIES ("url" = "__URL_OF_THE_PEM__", "catalog" = "kafka");
 -- Every job below uses its own consumer group (set by StarRocks), independent of the services' groups.
+-- "max_error_number" = "0" on purpose: a record that cannot be loaded PAUSES the job (alert: SHOW ROUTINE LOAD state
+-- PAUSED) instead of being skipped - reconciliation and GGR must never silently miss money. Fix, then RESUME.
 
 CREATE ROUTINE LOAD bingo_dw.load_wallet_txn ON wallet_txn
 COLUMNS (id, user_id, user_line, currency, txn_type, direction, amount, balance_after, provider_code,
@@ -118,13 +123,16 @@ FROM KAFKA (
 
 CREATE ROUTINE LOAD bingo_dw.load_game_round ON game_round
 COLUMNS (provider_code, round_id, user_id, user_line, currency, game_code, game_type, game_name, bet_amount,
-         payout_amount, valid_bet, status, bet_raw, settled_raw,
+         payout_amount, valid_bet, status, revision, bet_raw, settled_raw,
          bet_at = convert_tz(str_to_date(left(replace(bet_raw, 'T', ' '), 19), '%Y-%m-%d %H:%i:%s'), '+00:00', '+08:00'),
          settled_at = convert_tz(str_to_date(left(replace(settled_raw, 'T', ' '), 19), '%Y-%m-%d %H:%i:%s'), '+00:00', '+08:00'))
 PROPERTIES (
     "format" = "json",
-    "jsonpaths" = "[\"$.providerCode\",\"$.roundId\",\"$.userId\",\"$.userLine\",\"$.currency\",\"$.gameCode\",\"$.gameType\",\"$.gameName\",\"$.betAmount\",\"$.payoutAmount\",\"$.validBet\",\"$.status\",\"$.betTime\",\"$.settledTime\"]",
+    "jsonpaths" = "[\"$.providerCode\",\"$.roundId\",\"$.userId\",\"$.userLine\",\"$.currency\",\"$.gameCode\",\"$.gameType\",\"$.gameName\",\"$.betAmount\",\"$.payoutAmount\",\"$.validBet\",\"$.status\",\"$.revision\",\"$.betTime\",\"$.settledTime\"]",
     "desired_concurrent_number" = "8",
+    -- conditional update: a re-sent older revision (republish job racing a correction) never replaces a newer one
+    -- (verify: merge_condition for Routine Load needs StarRocks >= 3.1)
+    "merge_condition" = "revision",
     "max_error_number" = "0"
 )
 FROM KAFKA (

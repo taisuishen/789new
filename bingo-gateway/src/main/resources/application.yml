@@ -115,8 +115,9 @@ bingo:
         - /actuator/health
         - /actuator/health/**
     client-ip:
-      # 0 = first X-Forwarded-For entry (edge overwrites the header); N = N-th entry from the right
-      trusted-hops: ${CLIENT_IP_TRUSTED_HOPS:0}
+      # proxies that append to X-Forwarded-For in front of the gateway; the client IP is the N-th entry from the right
+      # (entries further left are client-controlled): ELB only = 1 (test), WAF + ELB = 2 (production, bingo-gateway.yaml)
+      trusted-hops: ${CLIENT_IP_TRUSTED_HOPS:1}
     auth:
       # "PATTERN" (any method) or "METHOD PATTERN". GET /api/queue/status (waiting room) is always public.
       public-paths:

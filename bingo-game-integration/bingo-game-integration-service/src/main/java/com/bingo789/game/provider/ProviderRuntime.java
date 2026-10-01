@@ -17,6 +17,11 @@ public record ProviderRuntime(
         return config.currencies().isEmpty() || config.currencies().contains(currency);
     }
 
+    /** For providers whose callbacks carry no currency: the first configured one (null when none is configured). */
+    public String defaultCurrency() {
+        return config.currencies().isEmpty() ? null : config.currencies().getFirst();
+    }
+
     public TransferCapable transferApi() {
         if (adapter instanceof TransferCapable transfer) {
             return transfer;

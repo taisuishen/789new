@@ -25,7 +25,7 @@ class DemoProviderAdapterTest {
                  "roundId":"r-1","gameCode":"slot-1","amount":12.3400,"winType":"FREESPIN","roundEnded":true}
                 """;
 
-        WalletCommand command = adapter.parse(request("win", body));
+        WalletCommand command = adapter.parse(request("win", body), null);
 
         assertThat(command).isInstanceOfSatisfying(WalletCommand.Payout.class, payout -> {
             assertThat(payout.payoutType()).isEqualTo(TxnType.FREE_PAYOUT);
@@ -36,9 +36,9 @@ class DemoProviderAdapterTest {
 
     @Test
     void rejectsMissingFieldsAndUnknownActions() {
-        assertThatThrownBy(() -> adapter.parse(request("bet", "{\"playerId\":\"b7891001\"}")))
+        assertThatThrownBy(() -> adapter.parse(request("bet", "{\"playerId\":\"b7891001\"}"), null))
                 .isInstanceOf(CallbackException.class);
-        assertThatThrownBy(() -> adapter.parse(request("jackpot-contribution", "{}")))
+        assertThatThrownBy(() -> adapter.parse(request("jackpot-contribution", "{}"), null))
                 .isInstanceOf(CallbackException.class);
     }
 

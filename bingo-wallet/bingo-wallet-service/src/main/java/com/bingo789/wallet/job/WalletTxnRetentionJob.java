@@ -19,9 +19,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 /**
- * Keeps wallet_txn at the idempotency window (bingo.wallet.retention.keep, default 7 days): history is in StarRocks,
- * loaded from bingo.wallet.txn, and the CDC job ignores deletes. Schedule it off-peak (e.g. daily 05:00-11:00 UTC+8,
- * every 10 minutes) and only once the StarRocks load of bingo.wallet.txn is running.
+ * Keeps wallet_txn at the idempotency window (bingo.wallet.retention.keep, default 30 days; see WalletProperties for
+ * how to size it): history is in StarRocks, loaded from bingo.wallet.txn, and the CDC job ignores deletes. Schedule it
+ * off-peak (e.g. daily 05:00-11:00 UTC+8, every 10 minutes) and only once the StarRocks load of bingo.wallet.txn is
+ * running; a paused Routine Load is an alert (docs/go-live.md §7) long before rows reach this age.
  * <p>
  * All shard databases in parallel; each deletes the oldest rows in small batches and pauses at least as long as the
  * last batch took, so a busy database automatically gets less delete load.

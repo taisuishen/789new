@@ -1,54 +1,11 @@
 USE bingo_reconcile;
 
--- All aggregates here are built asynchronously, in batches, from Kafka (bingo.wallet.txn, bingo.provider.bet).
--- Platform totals are never maintained per wallet transaction: a shared total row would be a global hot row.
--- stat_hour / period_start are UTC+8.
--- user_line: aggregates are kept per player line (the line carried by each event, a snapshot at write time) for
--- line-scoped reports. Every platform-vs-provider comparison, settlement and RTP check sums all lines, so
+-- Results of reconciliation and reporting only. The figures they are computed from are summed in StarRocks
+-- (deploy/starrocks/bingo_dw.sql, loaded from Kafka into Primary Key tables); nothing here is fed per transaction.
+-- period_start is UTC+8.
+-- user_line: ggr_daily is kept per player line (the line carried by each ledger event, a snapshot at write time)
+-- for line-scoped reports. Every platform-vs-provider comparison, settlement and RTP check sums all lines, so
 -- recon_diff, provider_settlement and rtp_alert have no line.
-
--- Consumed offsets, advanced in the same local transaction as the aggregates (exactly-once effect).
-CREATE TABLE IF NOT EXISTS kafka_offset (
-    consumer_group VARCHAR(128) NOT NULL,
-    topic          VARCHAR(255) NOT NULL,
-    partition_no   INT          NOT NULL,
-    next_offset    BIGINT       NOT NULL COMMENT 'next offset to apply',
-    updated_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (consumer_group, topic, partition_no)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'stored Kafka offsets';
-
--- Ledger side: game transactions per hour of the txn's createdAt.
--- net bet = bet - rollback; net payout = payout - payout_reversal + adjust (adjust is signed, + = credit).
-CREATE TABLE IF NOT EXISTS recon_platform_hourly (
-    stat_hour              DATETIME       NOT NULL,
-    user_line              INT            NOT NULL DEFAULT 1 COMMENT 'player line at txn time (WalletTxnEvent.userLine)',
-    provider_code          VARCHAR(32)    NOT NULL,
-    game_code              VARCHAR(64)    NOT NULL DEFAULT '',
-    currency               VARCHAR(8)     NOT NULL,
-    bet_amount             DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    rollback_amount        DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    payout_amount          DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    payout_reversal_amount DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    adjust_amount          DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    bet_count              BIGINT         NOT NULL DEFAULT 0 COMMENT 'BET transactions (stakes)',
-    txn_count              BIGINT         NOT NULL DEFAULT 0,
-    updated_at             DATETIME(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (stat_hour, user_line, provider_code, game_code, currency)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'ledger aggregates per hour';
-
--- Provider side: provider bet-history records per hour of the provider's bet time.
-CREATE TABLE IF NOT EXISTS recon_provider_hourly (
-    stat_hour     DATETIME       NOT NULL,
-    user_line     INT            NOT NULL DEFAULT 1 COMMENT 'player line at first pull (ProviderBetEvent.userLine)',
-    provider_code VARCHAR(32)    NOT NULL,
-    game_code     VARCHAR(64)    NOT NULL DEFAULT '',
-    currency      VARCHAR(8)     NOT NULL,
-    bet_amount    DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    payout_amount DECIMAL(20, 4) NOT NULL DEFAULT 0,
-    record_count  BIGINT         NOT NULL DEFAULT 0,
-    updated_at    DATETIME(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (stat_hour, user_line, provider_code, game_code, currency)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'provider aggregates per hour';
 
 -- Differences / tickets. diff = platform_value - provider_value.
 -- OPEN / AUTO_FIXED are automation-controlled (re-runs update them), RESOLVED / IGNORED are operator decisions.
@@ -72,10 +29,10 @@ CREATE TABLE IF NOT EXISTS recon_diff (
     KEY idx_status (status, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'reconciliation differences';
 
--- GGR per reporting day (bingo.reconcile.report-zone), rebuilt from recon_platform_hourly by reconDailyGgrJob.
+-- GGR per reporting day (bingo.reconcile.report-zone), rebuilt from StarRocks wallet_txn by reconDailyGgrJob.
 CREATE TABLE IF NOT EXISTS ggr_daily (
     stat_date     DATE           NOT NULL,
-    user_line     INT            NOT NULL DEFAULT 1 COMMENT 'from recon_platform_hourly.user_line',
+    user_line     INT            NOT NULL DEFAULT 1 COMMENT 'wallet_txn.user_line (player line at txn time)',
     provider_code VARCHAR(32)    NOT NULL,
     game_code     VARCHAR(64)    NOT NULL DEFAULT '',
     currency      VARCHAR(8)     NOT NULL,

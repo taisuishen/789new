@@ -47,15 +47,25 @@ public interface GameRoundMapper extends BaseMapper<GameRound> {
                    @Param("eventAt") LocalDateTime eventAt);
 
     /**
-     * OPEN -> SETTLED / CANCELLED, at most once. balanceAfter is stored so that a re-sent RoundSettledEvent carries
-     * the same value as the first send.
+     * OPEN -> SETTLED / CANCELLED (revision 1), at most once. balanceAfter is stored so that a re-sent
+     * RoundSettledEvent carries the same value as the first send.
      */
     @Update("""
-            UPDATE game_round SET status = #{status}, settled_at = #{settledAt}, balance_after = #{balanceAfter}
+            UPDATE game_round SET status = #{status}, settled_at = #{settledAt}, balance_after = #{balanceAfter}, revision = 1
              WHERE id = #{id} AND round_date = #{roundDate} AND status = 'OPEN'
             """)
     int close(@Param("id") long id, @Param("roundDate") LocalDate roundDate, @Param("status") String status,
               @Param("settledAt") LocalDateTime settledAt, @Param("balanceAfter") BigDecimal balanceAfter);
+
+    /**
+     * A closed round changed (late rollback / payout / adjustment): next revision, to be published again.
+     * settled_at stays: it is part of the round's identity downstream (StarRocks primary key, business day).
+     */
+    @Update("""
+            UPDATE game_round SET status = #{status}, revision = revision + 1, event_published = 0
+             WHERE id = #{id} AND round_date = #{roundDate} AND status <> 'OPEN'
+            """)
+    int revise(@Param("id") long id, @Param("roundDate") LocalDate roundDate, @Param("status") String status);
 
     /**
      * Keyset scan. OPEN rounds are a small fraction of the table, so the index is forced: with ORDER BY id LIMIT n
@@ -86,6 +96,10 @@ public interface GameRoundMapper extends BaseMapper<GameRound> {
     List<GameRound> findUnpublished(@Param("before") LocalDateTime before, @Param("afterId") long afterId,
                                     @Param("limit") int limit);
 
-    @Update("UPDATE game_round SET event_published = 1 WHERE id = #{id} AND round_date = #{roundDate}")
-    int markPublished(@Param("id") long id, @Param("roundDate") LocalDate roundDate);
+    /** Only the acknowledged revision: a newer revision committed meanwhile stays unpublished and is sent too. */
+    @Update("""
+            UPDATE game_round SET event_published = 1
+             WHERE id = #{id} AND round_date = #{roundDate} AND revision = #{revision}
+            """)
+    int markPublished(@Param("id") long id, @Param("roundDate") LocalDate roundDate, @Param("revision") int revision);
 }

@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS mq_outbox (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   topic VARCHAR(128) NOT NULL COMMENT 'Kafka topic', msg_key VARCHAR(128) NOT NULL COMMENT 'Kafka message key',
   payload JSON NOT NULL,
-  status TINYINT NOT NULL DEFAULT 0 COMMENT '0 pending, 1 sent, 2 failed (alert)',
+  status TINYINT NOT NULL DEFAULT 0 COMMENT '0 pending (retried until sent), 1 sent (purged after 7 days)',
   retry_count INT NOT NULL DEFAULT 0,
   next_retry_at DATETIME(3) NOT NULL, sent_at DATETIME(3) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

@@ -14,7 +14,7 @@ import java.util.List;
 
 /**
  * Wagering progress from the round-settled stream (message key = userId, so one player's rounds stay on one
- * partition and are applied in order). Scaled by KEDA on this group's lag (deploy/k8s/autoscaling-keda.yaml).
+ * partition and are applied in order). Scaled by KEDA on this group's lag (deploy/k8s/autoscaling.yaml).
  */
 @Slf4j
 @Component

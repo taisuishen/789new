@@ -1,13 +1,24 @@
 # Namespace for all bingo-* workloads (CCE, Kubernetes >= 1.28 - required for the
 # apps.kubernetes.io/pod-index label that feeds WORKER_ID).
+# Only our own images run here, all of them "restricted"-compliant. Third-party infrastructure images that run as
+# root (Nacos, xxl-job-admin) live in bingo-infra below, so a compromised infra pod is not inside the namespace
+# whose pods can reach the wallet (01-networkpolicy.yaml).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: bingo
   labels:
     app.kubernetes.io/part-of: bingo
-    # The bingo pods satisfy "restricted"; enforce "baseline" so an infra pod (e.g. xxl-job-admin, which runs
-    # as root) can still be deployed here, and warn on anything below "restricted".
+    pod-security.kubernetes.io/enforce: restricted
+---
+# Platform components that are not ours: xxl-job-admin (both environments) and, in the test environment, the
+# single-node Nacos. "baseline" because those images run as root.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bingo-infra
+  labels:
+    app.kubernetes.io/part-of: bingo
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/warn: restricted
 ---

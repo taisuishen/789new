@@ -5,6 +5,7 @@ import com.bingo789.game.api.ProviderQueryClient;
 import com.bingo789.game.api.dto.ResolveRoundCommand;
 import com.bingo789.game.api.dto.RoundResolutionView;
 import com.bingo789.reconcile.config.ReconcileProperties;
+import com.bingo789.reconcile.dw.ReconcileDw;
 import com.bingo789.reconcile.entity.DiffStatus;
 import com.bingo789.reconcile.entity.ReconLevel;
 import com.xxl.job.core.context.XxlJobHelper;
@@ -28,8 +29,9 @@ import java.util.stream.Collectors;
  * (one per provider, currency and pattern, with sample references in the note).
  * Job param (optional): yyyy-MM-dd; default yesterday in the reporting zone.
  * <p>
- * SKELETON: the matching itself belongs in StarRocks, which loads the same Kafka topics (bingo.wallet.txn,
- * bingo.provider.bet) with Routine Load; billions of rows per day must not be joined on the OLTP databases.
+ * The matching runs in StarRocks (ReconcileDw#mismatchedRounds): billions of rows per day must not be joined on the
+ * OLTP databases. Both sides are taken by the round's first bet time, so a round is compared as a whole even when it
+ * settles after midnight. Providers without round ids in their bet history cannot be matched this way.
  */
 @Slf4j
 @Component
@@ -37,10 +39,13 @@ import java.util.stream.Collectors;
 public class DailyDetailReconJob {
 
     private static final int MAX_SAMPLES_IN_NOTE = 20;
+    /** Beyond this many differing rounds a day the problem is systemic; the tickets carry what was read. */
+    private static final int MAX_MISMATCHES = 100_000;
 
     private final ProviderQueryClient providerQueryClient;
     private final ReconDiffService diffService;
     private final ReconcileProperties properties;
+    private final ReconcileDw dw;
 
     /** Mismatch patterns reported by the per-record matcher. */
     enum MismatchType {
@@ -74,7 +79,7 @@ public class DailyDetailReconJob {
         }
         LocalDateTime periodStart = LocalDateTime.ofInstant(day.atStartOfDay(properties.reportZoneId()).toInstant(), BingoTime.ZONE);
 
-        Map<GroupKey, List<DetailMismatch>> groups = findMismatches(day).stream()
+        Map<GroupKey, List<DetailMismatch>> groups = findMismatches(periodStart, periodStart.plusDays(1)).stream()
                 .collect(Collectors.groupingBy(m -> new GroupKey(m.providerCode(), m.currency(), m.type()),
                         LinkedHashMap::new, Collectors.toList()));
         int tickets = 0;
@@ -106,11 +111,36 @@ public class DailyDetailReconJob {
         }
     }
 
-    private List<DetailMismatch> findMismatches(LocalDate day) {
-        // TODO: query StarRocks: FULL OUTER JOIN of ledger rounds (from bingo.wallet.txn) and provider bet
-        //  records (from bingo.provider.bet) on (provider_code, round_id, user_id) for the day (+/- a boundary margin),
-        //  classified into MismatchType. Until then this layer produces no tickets.
-        return List.of();
+    private List<DetailMismatch> findMismatches(LocalDateTime from, LocalDateTime to) {
+        List<ReconcileDw.RoundPair> pairs = dw.mismatchedRounds(from, to, MAX_MISMATCHES);
+        if (pairs.size() == MAX_MISMATCHES) {
+            log.error("ALERT daily detail reconciliation {}: at least {} differing rounds, only these are ticketed", from, MAX_MISMATCHES);
+        }
+        return pairs.stream()
+                .filter(p -> !properties.excludedProviders().contains(p.providerCode()))
+                .map(DailyDetailReconJob::classify)
+                .toList();
+    }
+
+    static DetailMismatch classify(ReconcileDw.RoundPair p) {
+        BigDecimal platformNet = nz(p.platformBet()).subtract(nz(p.platformPayout()));
+        BigDecimal providerNet = nz(p.providerBet()).subtract(nz(p.providerPayout()));
+        MismatchType type;
+        BigDecimal platformAmount = platformNet;
+        BigDecimal providerAmount = providerNet;
+        if (p.platformRounds() == 0) {
+            type = MismatchType.MISSING_ON_PLATFORM;
+        } else if (p.providerRecords() == 0) {
+            type = MismatchType.MISSING_ON_PROVIDER;
+        } else if (nz(p.platformBet()).compareTo(nz(p.providerBet())) == 0
+                && nz(p.providerPayout()).compareTo(nz(p.platformPayout())) > 0) {
+            type = MismatchType.PROVIDER_WIN_NOT_CREDITED;
+            platformAmount = nz(p.platformPayout());
+            providerAmount = nz(p.providerPayout());
+        } else {
+            type = MismatchType.AMOUNT_MISMATCH;
+        }
+        return new DetailMismatch(type, p.providerCode(), p.currency(), p.roundId(), p.userId(), platformAmount, providerAmount);
     }
 
     private static BigDecimal nz(BigDecimal value) {

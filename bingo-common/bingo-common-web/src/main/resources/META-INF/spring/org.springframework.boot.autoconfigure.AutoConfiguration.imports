@@ -1,1 +1,2 @@
 com.bingo789.common.web.BingoWebAutoConfiguration
+com.bingo789.common.web.PiiAutoConfiguration

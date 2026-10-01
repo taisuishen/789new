@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS wallet (
 -- Not partitioned on purpose: MySQL requires the partition column in every unique key, and the idempotency
 -- key must stay global (so no daily partitions / DROP PARTITION here). History does not depend on this table: the
 -- CDC job emits INSERTs only (row_kind = '+I') and StarRocks loads bingo.wallet.txn from Kafka (Routine Load);
--- player history within the window is read from the TaurusDB read-only nodes. This table keeps the idempotency window only (e.g. 7 days); a retention
--- job (TODO) deletes older rows oldest-id-first in small, throttled, off-peak batches.
+-- player history within the window is read from the TaurusDB read-only nodes. This table keeps the idempotency window only (30 days by default, >= the
+-- longest provider retry / late-rollback / re-settlement window + margin); walletTxnRetentionJob deletes older rows
+-- oldest-id-first in small, throttled, off-peak batches.
 -- This table is also the event source: binlog -> Flink CDC -> Kafka bingo.wallet.txn (deploy/flink).
 CREATE TABLE IF NOT EXISTS wallet_txn (
     id              BIGINT        NOT NULL COMMENT 'snowflake, generated while holding the wallet row lock',

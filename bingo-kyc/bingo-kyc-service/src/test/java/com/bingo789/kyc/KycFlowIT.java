@@ -54,7 +54,10 @@ import static org.mockito.Mockito.when;
         "spring.cloud.nacos.config.import-check.enabled=false",
         "bingo.obs.enabled=false",
         "bingo.mybatis.force-master=false",
-        "bingo.mybatis.worker-id=4"
+        "bingo.mybatis.worker-id=4",
+        // test-only PII keys (plain values instead of dew:csms references)
+        "bingo.pii.keys.k1=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        "bingo.pii.index-key=kyc-flow-it-index-key-0123456789abcdef"
 })
 class KycFlowIT {
 

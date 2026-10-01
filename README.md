@@ -66,7 +66,7 @@ KYC、反洗钱（AML）、负责任博彩（RG）从架构初期就放在用户
                               Flink CDC ──► Kafka bingo.wallet.txn ──► bet-record ──► bingo.round.settled
                                                    │                                    ├─► promotion(返水)
                                                    │                                    └─► turnover(稽核扣减)
-                                                   └─► reconcile(对账/GGR)
+                                                   └─► StarRocks(Routine Load) ◄── reconcile(对账/GGR 读汇总)
 ```
 
 同步链路只有“验签 → 协议转换 → 扣加款”三步，其余都从账本异步派生。钱包不写 MQ（不双写），事件由 binlog 经 Flink CDC 产生。
@@ -120,11 +120,18 @@ KYC、反洗钱（AML）、负责任博彩（RG）从架构初期就放在用户
 4. 在大厅中添加厂商，运行 `GameSyncJob` 同步游戏（新游戏默认下线，审核后上线）；
 5. 与厂商确认：重复请求的返回格式、回滚找不到原单的返回、派彩找不到投注的返回、负余额策略、单局查询接口、注单拉取频率限制。
 
+已迁移的单一钱包厂商（从旧项目 `controller.third` 迁来，每家一个 `com.bingo789.game.adapter.<code>` 适配器，类注释写了协议、和旧实现的差异、全部配置项）：CQ9、EVO、FC、JDB、JILI、OP、PG、PP、PS、SA、WE、YGR。Nacos 样例在 `deploy/nacos/bingo-game-integration.yaml`（默认全部关闭），注单拉取的每家参数在 bet-record 的 `bingo.bet-record.pull.providers`。回调地址统一是 `https://<回调域名>/callback/<CODE>/<厂商自己的路径>`。
+- 按会话 token 识别玩家的厂商（PS、WE、JILI、PG、EVO、YGR 的部分接口）走 `WalletCommand.Session`：玩家被自我排除或冻结后不能再下注，但在玩局的派彩和退款照常入账。
+- 一次回调多笔（CQ9 EndRound、FC Settle、WE credit 数组等）走 `WalletCommand.Batch`，逐笔幂等。
+- 钱包拒绝给已派彩的注单退注（`BET_SETTLED`），作废已结算的局要先冲正派彩再退注。
+- 暂不支持：CQ9 / YGR 的 takeAll（全额下注）、YGR roundCheck、千倍单位币种（VND / IDR 等）。
+
 ### 对账、注单、分析
 
 - 注单：`game_round` 按月分区，由 `bingo.wallet.txn` 事件驱动，`round_txn` 表保证事件恰好应用一次；厂商注单拉取按时间窗增量，窗口之间有重叠。每局记录 `user_line`、`game_code`、`game_type`、`game_name`（来自大厅游戏目录，本地缓存，大厅不可用时降级为 OTHER）和结算后余额，`RoundSettledEvent` 带上这些字段供稽核、活动使用。
-- 对账：小时表、日 GGR 按线路分行存，与厂商比对、结算、RTP 监控按所有线路合计。
-- 对账三层：实时（超时未结算监控）、小时（按厂商/币种汇总比对）、日终（逐笔比对，TODO：在 StarRocks 上做）；GGR 与厂商结算、RTP 偏离监控在 reconcile。
+- 对账的数字全部由 StarRocks 汇总（主键表：Flink 重发、补发事件、重拉注单都只会覆盖同一行，不会重复计算），reconcile 自己不消费 Kafka、不存中间汇总；日 GGR 按线路分行存，与厂商比对、结算、RTP 监控按所有线路合计。
+- 对账三层：实时（超时未结算监控）、小时（按厂商/币种汇总比对）、日终（逐局比对 `game_round` 与 `provider_bet`，已知模式自动补偿）；GGR 与厂商结算、RTP 偏离监控在 reconcile。
+- 局结算事件带版本号（`RoundSettledEvent.revision`）：局结算后再来的回滚、派彩、调账会让这一局以新版本重发，稽核、返水、StarRocks 按“局 + 版本”替换旧值；厂商重新结算的注单重拉后也会重发。
 - Flink CDC 作业：[deploy/flink/wallet_txn_cdc.sql](deploy/flink/wallet_txn_cdc.sql)。
 
 ### 高可用
@@ -142,7 +149,7 @@ KYC、反洗钱（AML）、负责任博彩（RG）从架构初期就放在用户
 |---|---|---|
 | 钱包 / 注单分库 | 自研按玩家路由：`userId → SplitMix64 → 1024 逻辑分片 → 16 个 TaurusDB 实例`；路由表和迁移中的分片可在 Nacos 热更新，迁移中的分片拒绝写入（503 可重试）；不在分片作用域内访问数据库直接报错 | `bingo-common-mybatis` 的 `shard` 包；各服务 `application-sharding.yml`；`ShardTemplate` |
 | 数据库升配 | TaurusDB Serverless：在 TCU 范围内秒级纵向伸缩；扩实例 = 迁移逻辑分片（改路由表，不改代码） | `application-sharding.yml` 文件头的迁移步骤 |
-| Pod 扩容 | 在线服务：HPA（CPU）+ CronHPA（晚高峰、周末、发薪日提前抬高下限）；Kafka 消费者：KEDA（按 lag） | `deploy/k8s/autoscaling-*.yaml` |
+| Pod 扩容 | 只用 KEDA：CPU + 晚高峰定时下限（马尼拉时区）+ 消费者的 Kafka lag，每档数值在文件头 | `deploy/k8s/autoscaling.yaml` |
 | 节点扩容 | CCE 集群弹性引擎按待调度 Pod 自动加节点；钱包按连接预算上限预留节点 | `deploy/k8s`、`docs/capacity-1m.md` §3 |
 | 过载保护 | 网关等候室（满载时新登录 / 开游戏排队，已在游戏中的玩家不受影响）；降级开关（Nacos 实时关闭非核心接口） | `bingo-gateway` 的 `admission`、`DegradeGlobalFilter` |
 | 连接池 | Feign 统一用 Apache HttpClient 5 连接池；Tomcat `max-connections` 20000；每个分片库 Hikari 池 8 | 各服务 `application.yml` |
@@ -212,7 +219,7 @@ KYC、反洗钱（AML）、负责任博彩（RG）从架构初期就放在用户
 
 XXL-Job（执行器 `bingo-kyc`，都建议每 10 秒一次）：`kycSubmitRetryJob`、`kycResultPollJob`、`kycTimeoutJob`、`kycUserSyncJob`。
 配置在 `bingo_kyc.config` 表（`11_kyc.sql` 已插入默认值，30 秒内生效）：部署前把 `RunPodEndpointId`、`RunPodWebhookUrl`、`FaceCompareUrl` 里的 `__占位符__` 换成实际值；`RunPodApiKey`、`RunPodWebhookToken` 是 DEW 引用（`dew:csms/bingo-runpod-api-key`、`dew:csms/bingo-runpod-webhook-token`）。
-合规：证件图与 OCR 结果（姓名、证件号、生日）是敏感个人信息（RA 10173）：私有桶、签名 URL（后台 5 分钟）、`result_json` 上线前需 DEW 字段级加密（TODO），保留期按牌照要求配置 OBS 生命周期。
+合规：证件图与 OCR 结果（姓名、证件号、生日）是敏感个人信息（RA 10173）：私有桶、签名 URL（后台 5 分钟）、`result_json` 加密存储（`PiiCipher`，AES-256-GCM，密钥在 DEW），保留期按牌照要求配置 OBS 生命周期。
 
 ## 合规清单
 
@@ -226,7 +233,7 @@ XXL-Job（执行器 `bingo-kyc`，都建议每 10 秒一次）：`kycSubmitRetry
 | 自我排除玩家仍可提现、不再发营销奖励、不展示活动 | 钱包 `WITHDRAW_FREEZE` 允许 `BET_LOCKED`；promotion 发奖前检查 `canPlay`，活动列表对受限玩家为空 |
 | AML：存款流水要求、大额预警、提现审核 | turnover：`turnover_bucket`（充值即生成全类型稽核）；risk：`aml_alert`、规则引擎 |
 | 审计 | 钱包状态变更写 `wallet_status_log`；账本只追加；后台接口 TODO：RBAC + 操作审计 |
-| 敏感数据 | 不存证件号原文、收款账号只存令牌化引用；PII 字段需用 DEW 做字段级加密（TODO） |
+| 敏感数据 | 不存证件号原文、收款账号只存令牌化引用；邮箱、手机、生日和 KYC 识别结果按字段加密（`PiiCipher`，AES-256-GCM，密钥在 DEW），查重和查找用 HMAC 盲索引 |
 
 ## 本地运行
 
@@ -285,13 +292,13 @@ mvn verify -Pit     # 集成测试（*IT，需要 Docker / Testcontainers）
 以下各项**都还没做**（代码里对应位置是 `TODO:` 或占位实现）：
 
 - **统一编译与测试**：用户线路、影子账户、稽核、通用活动表、KYC 这几轮的改动都还没编译，需一次全量 `mvn -Pit clean verify` 并修正。这几轮给 payment、risk、promotion、bet-record、reconcile、turnover、kyc 写了测试，但都还没跑过；bet-record 分片后的扫描任务还缺集成测试。
-- **100 万在线第二阶段**：Flink 按局 / 按分钟聚合，替代 bet-record、promotion（有效投注，用于返水）逐条写库。**稽核不在此列**：稽核扣减和稽核记录必须像余额一样逐局实时（已按玩家分库，只有持有未完成稽核的玩家才写库）。另外：钱包流水按日分表 + 归档（跨天幂等校验）；全链路压测（影子库，`X-Load-Test`）；AI 容量预测服务（自动生成 CronHPA 规则）。
+- **100 万在线第二阶段**：Flink 按局 / 按分钟聚合，替代 bet-record、promotion（有效投注，用于返水）逐条写库。**稽核不在此列**：稽核扣减和稽核记录必须像余额一样逐局实时（已按玩家分库，只有持有未完成稽核的玩家才写库）。另外：钱包流水按日分表 + 归档（跨天幂等校验）；全链路压测（影子库，`X-Load-Test`）；AI 容量预测服务（自动生成晚高峰下限）。
 - **查询与归档**（一种做法，不引入新的同步链路）：
   1. **玩家查询**（流水 `GET /api/wallet/transactions`、注单 `GET /api/bet-records/rounds`）走 TaurusDB 只读节点，按 `ShardRouter` 路由到玩家所在分片，只查保留窗口内的数据；只读节点与主库共享存储，加节点便宜，数据实时。分片库地址要填 TaurusDB 数据库代理（读写分离）地址：不带 `FORCE_MASTER` 的查询由代理发到只读节点（钱包默认全部强制主库，流水查询用 `ReplicaRoute` 放开）。
   2. **后台报表、日终逐笔对账、风控分析**走一套 StarRocks（托管），用 Routine Load 直接消费现有的 Kafka 事件流（`bingo.wallet.txn`、`bingo.round.settled`、`bingo.provider.bet`，充值、提现、奖金都在钱包流水里）：事件流已经跨分片合并、只有 INSERT（CDC 已按 `row_kind = '+I'` 过滤），不用为 16 + 16 个分片库各建同步任务，OLTP 的清理也不影响历史。用户、代理、充提订单、活动等低频表通过 StarRocks 的 JDBC Catalog（连共享实例的只读节点）直接关联查询，不做同步。脚本：[deploy/starrocks/bingo_dw.sql](deploy/starrocks/bingo_dw.sql)。托管产品用华为云 CloudTable StarRocks（上线前确认所选区域可开通）；不用 TaurusDB HTAP，它的价值在 binlog 自动同步，而我们的数据已经在 Kafka 里。
-  3. **OLTP 保留窗口**：`wallet_txn` 保留 7 天（厂商重试、回滚一般不超过 72 小时，按合同核实），`walletTxnRetentionJob` 按雪花 id 从最老的一段分批删除（批后至少停顿与本批同样长的时间，库忙时自动减速），低峰执行；唯一幂等键必须全局，不做按日分区。注单（`game_round`、`provider_bet_record`、`round_txn`）和稽核记录按月分区，由 `betRecordPartitionJob`、`turnoverPartitionJob` 提前建分区并按保留月数 DROP PARTITION（注单默认 2 个月，稽核记录 6 个月）。
+  3. **OLTP 保留窗口**：`wallet_txn` 保留 30 天（它就是幂等表：不少于各厂商重试、迟到回滚、重新结算的最长窗口再加余量，接入时按合同逐家核实），`walletTxnRetentionJob` 按雪花 id 从最老的一段分批删除（批后至少停顿与本批同样长的时间，库忙时自动减速），低峰执行；唯一幂等键必须全局，不做按日分区。注单（`game_round`、`provider_bet_record`、`round_txn`）和稽核记录按月分区，由 `betRecordPartitionJob`、`turnoverPartitionJob` 提前建分区并按保留月数 DROP PARTITION（注单默认 2 个月，稽核记录 6 个月）。
 - **厂商配置热更新**：`ProviderRegistry` 目前只在启动时构建，改 Nacos 需重启；Sentinel 规则接入 Nacos 数据源。
-- **对账**：日终逐笔对账（`DailyDetailReconJob` 为占位，在 StarRocks 上做钱包流水与厂商注单的逐笔 FULL JOIN）；RTP 告警改为基于置信区间；厂商结算的负 GGR 结转与最低费用。
+- **对账**：RTP 告警改为基于置信区间；厂商结算的负 GGR 结转与最低费用；注单里没有局号的厂商的逐笔匹配规则。
 - **后台服务（bingo-admin）**：RBAC、操作审计、人工调账审批；操作人线路权限（`LineScope`）注入与按线路过滤的报表；风控审核任务、AML 预警、KYC 审核列表按线路过滤；活动写操作校验线路覆盖。
 - **多账号识别**：需要 user → risk 的设备 / IP 关联数据流，`MultiAccountRule` 目前恒通过。
-- **敏感数据**：DEW 字段级加密（user 的邮箱 / 手机 / 生日，KYC 的 `result_json` OCR 字段）；KYC 图片按牌照要求配置 OBS 生命周期（保留期）。
+- **敏感数据**：KYC 证件号的盲索引（等 bbwave_face 的 OCR 字段名确认后加，用于“同一证件多个账号”的查重）；KYC 图片按牌照要求配置 OBS 生命周期（保留期）。

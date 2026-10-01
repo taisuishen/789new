@@ -28,10 +28,13 @@ public record WalletProperties(
 
     /**
      * wallet_txn retention (walletTxnRetentionJob): rows older than {@code keep} are deleted oldest-id-first in batches.
-     * {@code keep} must exceed the longest provider retry / rollback window (a retry of a deleted transaction would be
-     * booked again).
+     * wallet_txn IS the idempotency store, so {@code keep} must exceed the longest window in which any provider may
+     * still send a transaction for a round (retries, late rollbacks, re-settlements), plus a margin: a retried payout
+     * whose original was deleted would be booked again, and a rollback of a deleted bet would refund nothing. Confirm
+     * the window with every provider at onboarding (docs/go-live.md) and raise {@code keep} before enabling one with a
+     * longer window.
      */
-    public record Retention(@DefaultValue("7d") Duration keep,
+    public record Retention(@DefaultValue("30d") Duration keep,
                             @DefaultValue("2000") int batchSize,
                             @DefaultValue("50ms") Duration pauseBetweenBatches,
                             @DefaultValue("30m") Duration maxRunTime) {

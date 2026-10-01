@@ -103,7 +103,9 @@ bingo:
     max-resolve-attempts: 12
     batch-size: 200
     round-lookback-days: 1
-    late-event-lookback-days: 7
+    # = the wallet's idempotency window (bingo.wallet.retention.keep 30d): a late rollback / payout the wallet still
+    # accepts must find its round, so the round is revised (RoundSettledEvent.revision) instead of being ignored
+    late-event-lookback-days: 30
     republish-delay: 2m
     # betRecordPartitionJob: full months kept before the current one (players see ~60 days of rounds; history for
     # reports is in StarRocks). round_txn must outlive the Kafka retention + replay window.
@@ -115,6 +117,16 @@ bingo:
       page-size: 500
       page-interval: 200ms
       max-pages: 2000
+      # Per provider, only what differs from the defaults (see each adapter's Javadoc, com.bingo789.game.adapter.*):
+      providers:
+        JILI: { settle-delay: 10m, page-size: 5000 }    # history written 5-10 min late
+        PG: { settle-delay: 5m, page-size: 5000 }       # history published 3-5 min late
+        JDB: { settle-delay: 3m }
+        SA: { settle-delay: 5m }
+        YGR: { overlap: 10m, settle-delay: 5m }         # indexed by wager time, settles later
+        FC: { max-window: 15m, page-interval: 1s }      # 15 min per request, spaced requests
+        OP: { page-interval: 1100ms }                   # 1 request per second (5-min sub-windows)
+        PS: { max-window: 10m }                         # unpaged feed
 
 xxl:
   job:

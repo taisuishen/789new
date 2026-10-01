@@ -40,10 +40,12 @@ public record BingoGatewayProperties(
     }
 
     /**
-     * @param trustedHops 0 = first X-Forwarded-For entry (the edge overwrites the header);
-     *                    N = N-th entry from the right, for proxies that append instead
+     * @param trustedHops number of our own proxies that APPEND to X-Forwarded-For in front of the gateway: the client
+     *                    IP is the N-th entry from the right; everything left of it is client-controlled. ELB only
+     *                    (test environment) = 1, WAF + ELB (production) = 2. 0 takes the first entry and is only
+     *                    correct behind an edge that overwrites the header.
      */
-    public record ClientIp(@DefaultValue("0") int trustedHops) {
+    public record ClientIp(@DefaultValue("1") int trustedHops) {
     }
 
     /** @param publicPaths paths reachable without a session; a valid token is still resolved when present */

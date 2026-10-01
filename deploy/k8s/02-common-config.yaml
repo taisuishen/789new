@@ -14,12 +14,14 @@ data:
   DB_PORT: "3306"
   REDIS_HOST: "__DCS_REDIS_HOST__"              # DCS instance address
   REDIS_PORT: "6379"
-  NACOS_ADDR: "__NACOS_ADDR__"                  # e.g. nacos-0.nacos:8848,nacos-1.nacos:8848,nacos-2.nacos:8848
-  NACOS_NAMESPACE: "__NACOS_NAMESPACE_ID__"     # namespace ID (not name), e.g. prod
+  NACOS_ADDR: "__NACOS_ADDR__"                  # CSE address in production; test: nacos.bingo-infra:8848
+  NACOS_NAMESPACE: "__NACOS_NAMESPACE_ID__"     # namespace ID (not name), e.g. prod / test
+  # Nacos user of the services: READ + WRITE on this namespace (instance registration is a write), nothing else.
+  NACOS_USERNAME: "bingo-app"
   NACOS_ENABLED: "true"
   KAFKA_SERVERS: "__DMS_KAFKA_BROKERS__"        # DMS for Kafka private addresses, e.g. 192.168.0.11:9092,192.168.0.12:9092,192.168.0.13:9092
-  # xxl-job-admin must run in namespace bingo: it calls the executors on 9101..9109, which only accept in-namespace traffic.
-  XXL_JOB_ADMIN: "http://xxl-job-admin:8080"
+  # xxl-job-admin runs in namespace bingo-infra; the executors accept its calls on 9101..9111 (01-networkpolicy.yaml).
+  XXL_JOB_ADMIN: "http://xxl-job-admin.bingo-infra:8080"
   # OpenTelemetry agent (baked into the image). The agent's default protocol is http/protobuf (port 4318).
   OTEL_EXPORTER_OTLP_ENDPOINT: "__OTEL_COLLECTOR_ENDPOINT__"   # e.g. http://otel-collector.observability:4318
   OTEL_TRACES_SAMPLER: "parentbased_traceidratio"

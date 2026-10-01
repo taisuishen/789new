@@ -49,7 +49,7 @@ class RoundServiceTest {
         publisher = mock(RoundEventPublisher.class);
         BetRecordProperties properties = new BetRecordProperties(Duration.ofMinutes(30), Map.of(), 12, 200, 1, 7,
                 Duration.ofMinutes(2), new BetRecordProperties.Pull(Duration.ofMinutes(5), Duration.ofMinutes(2),
-                Duration.ofMinutes(30), 500, Duration.ofMillis(200), 2000), 2);
+                Duration.ofMinutes(30), 500, Duration.ofMillis(200), 2000, Map.of()), 2);
         service = new RoundService(roundMapper, mock(RoundTxnMapper.class), publisher, properties);
         doAnswer(invocation -> {
             invocation.<GameRound>getArgument(0).setId(ROUND_PK);

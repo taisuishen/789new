@@ -18,8 +18,14 @@ public record GameIntegrationProperties(
         @DefaultValue SecretSettings secrets) {
 
     /**
-     * @param adapter            adapter name implementing this provider's protocol; defaults to the provider code
+     * @param adapter            adapter name implementing this provider's protocol; defaults to the provider code.
+     *                           A second merchant account of the same provider (e.g. another line) is another provider
+     *                           code with the same adapter: it has its own callback URL, keys and settings
      * @param secret             signing secret, either plain (local dev only) or a {@code dew:csms/<name>} reference
+     * @param secrets            further named secrets of the protocol (AES key / IV, API tokens ...), same format as
+     *                           {@code secret}; read with ProviderClient#secret(String)
+     * @param settings           non-secret protocol settings (agent / host ids, lobby code, extra endpoints, language
+     *                           ...), read with ProviderClient#setting(String); the adapter documents its keys
      * @param ipWhitelist        CIDR list of provider callback source addresses
      * @param balanceScale       decimals shown to the provider; balances are rounded DOWN, never up
      * @param maxConcurrency     bulkhead size for outbound calls to this provider
@@ -41,7 +47,9 @@ public record GameIntegrationProperties(
             @DefaultValue("1s") Duration connectTimeout,
             @DefaultValue("5s") Duration readTimeout,
             @DefaultValue CircuitBreakerSettings circuitBreaker,
-            @DefaultValue("true") boolean autoTransferOnLaunch) {
+            @DefaultValue("true") boolean autoTransferOnLaunch,
+            @DefaultValue Map<String, String> secrets,
+            @DefaultValue Map<String, String> settings) {
     }
 
     public record CircuitBreakerSettings(

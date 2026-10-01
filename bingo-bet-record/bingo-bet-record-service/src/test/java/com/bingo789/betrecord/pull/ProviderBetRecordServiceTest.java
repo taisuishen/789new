@@ -60,6 +60,22 @@ class ProviderBetRecordServiceTest {
     }
 
     @Test
+    void aReSettledRecordIsPublishedAgain() {
+        ProviderBetRecord stored = stored("b-1", 1, true);
+        stored.setPayoutAmount(new BigDecimal("0"));
+        when(mapper.findStored(eq(PROVIDER), any(), any(), any())).thenReturn(List.of(stored));
+
+        List<ProviderBetEvent> toPublish = service.upsertPage(PROVIDER, List.of(view("b-1", 10L, "fortune-tiger")),
+                new PageLookups(Map.of(10L, 2), Map.of()));
+
+        assertThat(toPublish).singleElement().satisfies(e -> {
+            assertThat(e.payoutAmount()).isEqualByComparingTo("5");
+            // the stored line, not the player's current one
+            assertThat(e.userLine()).isEqualTo(1);
+        });
+    }
+
+    @Test
     void recordOfAPlayerMissingFromTheLookupGoesToTheDefaultLine() {
         PageLookups lookups = new PageLookups(Map.of(), Map.of());
 
@@ -79,6 +95,11 @@ class ProviderBetRecordServiceTest {
         row.setProviderBetId(betId);
         row.setUserLine(line);
         row.setPublished(published);
+        // as stored from view(...): a re-pull of the same values is no change
+        row.setBetAmount(new BigDecimal("10"));
+        row.setPayoutAmount(new BigDecimal("5"));
+        row.setStatus("SETTLED");
+        row.setSettleTime(java.time.LocalDateTime.ofInstant(BET_TIME.plusSeconds(5), com.bingo789.common.core.time.BingoTime.ZONE));
         return row;
     }
 }

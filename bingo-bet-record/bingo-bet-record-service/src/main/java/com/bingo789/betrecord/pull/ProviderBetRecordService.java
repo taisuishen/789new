@@ -25,11 +25,11 @@ import java.util.Map;
 /**
  * Stores one page of provider bet records and tells the caller which ones still have to be published.
  * <p>
- * A record is published once, when first stored (or again if a previous run stored it but crashed before
- * Kafka acknowledged it). Re-pulled records whose status or payout changed are updated here but NOT re-published:
- * ProviderBetEvent is a snapshot and reconcile's hourly aggregate is additive, so a second event would double
- * count. The per-record daily reconciliation (StarRocks, upsert by providerBetId) is authoritative for such changes.
- * TODO: add a revision / previous values to ProviderBetEvent if hourly aggregates must follow re-settlements.
+ * A record is published when first stored, again if a previous run stored it but crashed before Kafka acknowledged
+ * it, and again whenever a re-pull shows the provider changed it (status, amounts, settle time: a re-settlement).
+ * ProviderBetEvent is the record's full current state; its only consumer is StarRocks (Primary Key table keyed by
+ * providerBetId), where the newer event replaces the older one, so a re-publish never double counts. One pull job
+ * per provider publishes in pull order, so the newest state is always the last one on the topic.
  * <p>
  * user_line, game_type and game_name are taken when a record is first stored and kept on re-pulls; an event
  * re-sent for a record stored by an earlier run carries the stored line.
@@ -70,7 +70,7 @@ public class ProviderBetRecordService {
             ProviderBetRecord existing = stored.get(record.providerBetId());
             if (existing == null) {
                 toPublish.add(toEvent(record, lookups.lineOf(record.userId())));
-            } else if (!Boolean.TRUE.equals(existing.getPublished())) {
+            } else if (!Boolean.TRUE.equals(existing.getPublished()) || changed(existing, record)) {
                 toPublish.add(toEvent(record, existing.getUserLine()));
             }
         }
@@ -86,6 +86,17 @@ public class ProviderBetRecordService {
         mapper.markPublished(providerCode, events.stream().map(ProviderBetEvent::providerBetId).toList(),
                 betTimes.stream().min(Comparator.naturalOrder()).orElseThrow(),
                 betTimes.stream().max(Comparator.naturalOrder()).orElseThrow());
+    }
+
+    /** The provider re-settled or corrected the record since it was stored. */
+    private static boolean changed(ProviderBetRecord stored, ProviderBetRecordView pulled) {
+        BigDecimal payout = pulled.payoutAmount() == null ? BigDecimal.ZERO : pulled.payoutAmount();
+        String status = pulled.status() == null ? "UNKNOWN" : pulled.status();
+        LocalDateTime settle = pulled.settleTime() == null ? null : local(pulled.settleTime());
+        return stored.getBetAmount().compareTo(pulled.betAmount()) != 0
+                || stored.getPayoutAmount().compareTo(payout) != 0
+                || !status.equals(stored.getStatus())
+                || !java.util.Objects.equals(settle, stored.getSettleTime());
     }
 
     private static boolean isValid(String providerCode, ProviderBetRecordView record) {

@@ -14,6 +14,9 @@ import java.time.Instant;
  * @param validBet     turnover that counts for rebates and wagering requirements (0 when cancelled)
  * @param balanceAfter the player's balance right after the wallet transaction that closed the round; null when
  *                     the round was closed without one (resolver / timeout)
+ * @param revision     1 when the round closed, +1 for every later change (late rollback, payout, adjustment). Each
+ *                     event is the round's full current state: consumers replace what they applied for an earlier
+ *                     revision and ignore revisions they have already seen.
  */
 public record RoundSettledEvent(
         String providerCode,
@@ -30,10 +33,17 @@ public record RoundSettledEvent(
         BigDecimal balanceAfter,
         String status,
         Instant betTime,
-        Instant settledTime) {
+        Instant settledTime,
+        Integer revision) {
 
-    /** A message written before the field existed carries no line: it belongs to line 1. */
+    /** A message written before a field existed: line 1, revision 1. */
     public RoundSettledEvent {
         userLine = UserLine.orDefault(userLine);
+        revision = revision == null || revision < 1 ? 1 : revision;
+    }
+
+    /** A correction of a round that was already published. */
+    public boolean isRevision() {
+        return revision > 1;
     }
 }

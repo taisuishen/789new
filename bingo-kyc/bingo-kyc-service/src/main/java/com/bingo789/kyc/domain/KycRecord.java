@@ -37,6 +37,7 @@ public class KycRecord {
     private BigDecimal faceDistance;
     private BigDecimal faceThreshold;
     /** Full worker report (PII). */
+    /** Worker report, encrypted (PiiCipher.decrypt to read); holds the OCR fields. */
     private String resultJson;
     private Integer userSynced;
     private LocalDateTime submittedAt;

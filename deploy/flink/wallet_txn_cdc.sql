@@ -5,9 +5,10 @@
 -- instance ('database-name' is a regex). Each job has its own __WALLET_DB_HOST__ and a non-overlapping 'server-id'
 -- range (e.g. instance NN -> 54NN1-54NN8). A user lives in exactly one database, so per-user ordering is preserved;
 -- all jobs write to the same topic, keyed by userId.
--- After a database moves to another instance (application-sharding.yml of the wallet), start the job on the new
--- instance with 'scan.startup.mode' = 'timestamp' and 'scan.startup.timestamp-millis' = the cutover time: rows copied
--- there by DRS must not be emitted again as new ledger events.
+-- After a database moves to another instance (application-sharding.yml of the wallet, steps 3-4), start the job on
+-- the new instance with 'scan.startup.mode' = 'timestamp' and 'scan.startup.timestamp-millis' = T_sync: the moment,
+-- during the write freeze, when DRS had applied everything AND the old instance's job had emitted everything. Rows
+-- copied by DRS are then not emitted again, and no player's events from the two jobs interleave.
 -- Size bingo.wallet.txn with 192 partitions (~250k events/s at peak).
 --
 -- Record key   : userId as a raw UTF-8 string (same bytes as a Java StringSerializer key, so Kafka's default

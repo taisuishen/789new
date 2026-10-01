@@ -4,8 +4,8 @@
 #
 # Sizing for 1,000,000 concurrent players (docs/capacity-1m.md; estimates until confirmed by load tests):
 #   ~100k player API QPS at peak (design 150k; static assets and the game list are served by the CDN)
-#   -> ~50 pods at peak (~2k QPS per pod at 60% CPU), HPA 10..80, 4 vCPU / 8 GiB each.
-#   Scaling: HPA on CPU + CCE CronHPA raising the floor before known peaks (autoscaling-cronhpa.yaml); the
+#   -> ~50 pods at peak (~2k QPS per pod at 60% CPU), 10..80 pods, 4 vCPU / 8 GiB each.
+#   Scaling: KEDA (autoscaling.yaml) on CPU + an evening floor before the known peak; the
 #   cluster autoscaler adds nodes.
 #   Beyond capacity the gateway queues new logins / game launches (waiting room,
 #   bingo.gateway.admission.*); players already in a game are unaffected.
@@ -42,7 +42,7 @@ metadata:
     app.kubernetes.io/name: bingo-gateway
     app.kubernetes.io/part-of: bingo
 spec:
-  # replicas is owned by the HPA (minReplicas 10); not set here so a re-apply never shrinks a scaled-out tier.
+  # replicas is owned by KEDA (autoscaling.yaml); not set here so a re-apply never shrinks a scaled-out tier.
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
@@ -64,6 +64,9 @@ spec:
         prometheus.io/path: /actuator/prometheus
     spec:
       priorityClassName: bingo-online
+      # SWR pull secret that CCE creates in every namespace (verify: kubectl -n bingo get secret default-secret)
+      imagePullSecrets:
+        - name: default-secret
       automountServiceAccountToken: false
       enableServiceLinks: false
       terminationGracePeriodSeconds: 60
@@ -114,6 +117,10 @@ spec:
           env:
             - name: MANAGEMENT_PORT          # pinned so probes / scraping never drift from application.yml
               value: "18080"
+            # Proxies appending to X-Forwarded-For in front of the gateway: WAF + ELB = 2. Test environment (ELB
+            # only, no WAF): 1. verify once by logging the header of a request from a known IP.
+            - name: CLIENT_IP_TRUSTED_HOPS
+              value: "2"
             # Waiting room HMAC key for queue tickets / passes: identical on all gateway pods, >= 32 chars.
             # The gateway refuses to start without it while bingo.gateway.admission.enabled=true.
             - name: ADMISSION_PASS_SECRET
@@ -129,7 +136,7 @@ spec:
               value: bingo-gateway
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "k8s.namespace.name=bingo,k8s.pod.name=$(POD_NAME)"
-          resources:                         # requests == limits: predictable HPA utilisation, Guaranteed QoS
+          resources:                         # requests == limits: predictable CPU utilisation, Guaranteed QoS
             requests:
               cpu: "4"
               memory: 8Gi
@@ -173,45 +180,6 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 512Mi
----
-# The HPA sets the replica count; CronHPA (autoscaling-cronhpa.yaml) only moves minReplicas at known peaks.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: bingo-gateway
-  namespace: bingo
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: bingo-gateway
-  minReplicas: 10                    # off-peak baseline (~1/5 of peak)
-  maxReplicas: 80                    # design 150k QPS + headroom
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
-  behavior:
-    scaleUp:
-      stabilizationWindowSeconds: 0
-      selectPolicy: Max
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 15
-        - type: Pods
-          value: 6
-          periodSeconds: 15
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      selectPolicy: Min
-      policies:
-        - type: Percent
-          value: 10
-          periodSeconds: 60
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

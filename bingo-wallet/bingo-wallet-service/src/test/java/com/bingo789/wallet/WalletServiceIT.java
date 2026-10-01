@@ -147,6 +147,25 @@ class WalletServiceIT {
     }
 
     @Test
+    void aPaidOutBetIsOnlyRefundedAfterItsPayoutIsReversed() {
+        long user = fundedUser("100");
+        wallet.bet(bet(user, "b-1", "r-1", "30"));
+        wallet.payout(payout(user, "p-1", "r-1", "50", TxnType.PAYOUT));
+
+        WalletResult refused = wallet.rollback(rollback(user, "rb-1", "b-1"));
+        assertThat(refused.code()).isEqualTo(WalletResultCode.BET_SETTLED);
+        assertThat(balance(user)).isEqualByComparingTo("120");
+
+        WalletResult reversal = wallet.rollback(new RollbackCommand(user, CUR, PROVIDER, user + "-rb-p", user + "-p-1",
+                TxnType.PAYOUT, "r-1", "slot-1"));
+        WalletResult refund = wallet.rollback(rollback(user, "rb-1", "b-1"));
+
+        assertThat(reversal.isSuccess()).isTrue();
+        assertThat(refund.isSuccess()).isTrue();
+        assertThat(balance(user)).isEqualByComparingTo("100");
+    }
+
+    @Test
     void payoutWithoutBetIsRejectedButStakelessPayoutIsNot() {
         long user = fundedUser("0");
 

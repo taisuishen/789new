@@ -16,9 +16,11 @@ CREATE TABLE IF NOT EXISTS user_account (
     id                BIGINT       NOT NULL COMMENT 'snowflake',
     username          VARCHAR(32)  NOT NULL COMMENT 'stored lower-case; a shadow repeats its player''s username',
     password_hash     VARCHAR(100) NOT NULL COMMENT 'BCrypt; ''!'' (never matches) for shadow accounts',
-    email             VARCHAR(254) NOT NULL COMMENT 'PII',
-    phone             VARCHAR(32)  NOT NULL COMMENT 'PII, E.164',
-    date_of_birth     DATE         NOT NULL COMMENT 'PII; minimum age checked at registration',
+    email             VARCHAR(512) NOT NULL COMMENT 'PII, encrypted (PiiCipher); lower-cased before encryption',
+    email_hash        CHAR(64)     NOT NULL COMMENT 'blind index of the lower-cased email (PiiCipher.blindIndex)',
+    phone             VARCHAR(128) NOT NULL COMMENT 'PII, encrypted (PiiCipher); E.164',
+    phone_hash        CHAR(64)     NOT NULL COMMENT 'blind index of the E.164 phone',
+    date_of_birth     VARCHAR(64)  NOT NULL COMMENT 'PII, encrypted ISO date (yyyy-MM-dd); minimum age checked at registration',
     country_code      CHAR(2)      NOT NULL COMMENT 'ISO 3166-1 alpha-2 country of residence declared at registration',
     default_currency  CHAR(3)      NOT NULL COMMENT 'ISO 4217',
     status            VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / SUSPENDED / CLOSED',
@@ -35,13 +37,13 @@ CREATE TABLE IF NOT EXISTS user_account (
     -- Identity columns of real players only (NULL for shadows, and unique keys ignore NULLs): logins and the
     -- one-account-per-person rule never see shadow accounts. Never written by the application.
     player_username   VARCHAR(32)  GENERATED ALWAYS AS (IF(account_type = 'PLAYER', username, NULL)) STORED,
-    player_email      VARCHAR(254) GENERATED ALWAYS AS (IF(account_type = 'PLAYER', email, NULL)) STORED,
-    player_phone      VARCHAR(32)  GENERATED ALWAYS AS (IF(account_type = 'PLAYER', phone, NULL)) STORED,
+    player_email_hash CHAR(64)     GENERATED ALWAYS AS (IF(account_type = 'PLAYER', email_hash, NULL)) STORED,
+    player_phone_hash CHAR(64)     GENERATED ALWAYS AS (IF(account_type = 'PLAYER', phone_hash, NULL)) STORED,
     PRIMARY KEY (id),
     UNIQUE KEY uk_username (player_username),
-    -- one account per person (licence condition); becomes a blind-index key once email/phone are encrypted
-    UNIQUE KEY uk_email (player_email),
-    UNIQUE KEY uk_phone (player_phone),
+    -- one account per person (licence condition), on the blind indexes (email / phone are encrypted)
+    UNIQUE KEY uk_email (player_email_hash),
+    UNIQUE KEY uk_phone (player_phone_hash),
     KEY idx_username_line (username, user_line),
     KEY idx_line_created (user_line, created_at),
     KEY idx_parent_agent (parent_agent_id),

@@ -14,11 +14,6 @@
 
     <dependencies>
         <dependency>
-            <!-- TxnType only; reconcile never calls the wallet -->
-            <groupId>com.bingo789</groupId>
-            <artifactId>bingo-wallet-api</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.bingo789</groupId>
             <artifactId>bingo-game-integration-api</artifactId>
         </dependency>
@@ -33,10 +28,6 @@
         <dependency>
             <groupId>com.bingo789</groupId>
             <artifactId>bingo-common-mybatis</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.bingo789</groupId>
-            <artifactId>bingo-common-mq</artifactId>
         </dependency>
         <dependency>
             <groupId>com.bingo789</groupId>
@@ -63,10 +54,6 @@
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-loadbalancer</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

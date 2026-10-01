@@ -91,7 +91,7 @@ class WaterfallTest {
     /** Bet at T0 + 10 min, settled at T0 + 11 min. */
     private static SettledRound round(String provider, String gameCode, String gameType, String validBet) {
         return new SettledRound(7L, 1, "PHP", provider + ":r:7", provider, gameCode, provider + ":" + gameCode,
-                gameType, new BigDecimal(validBet), new BigDecimal("1.00"), T0.plusMinutes(10), T0.plusMinutes(11));
+                gameType, new BigDecimal(validBet), new BigDecimal("1.00"), T0.plusMinutes(10), T0.plusMinutes(11), 1);
     }
 
     private static TurnoverBucket bucket(TurnoverScope scope, String value, String required, LocalDateTime createdAt) {

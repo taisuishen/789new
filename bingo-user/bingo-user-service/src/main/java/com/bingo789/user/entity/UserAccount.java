@@ -9,11 +9,11 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
-import java.time.LocalDate;
 
 /**
- * Player account. Government ID numbers and KYC documents are never stored here; they stay with the KYC vendor.
- * TODO: email, phone and dateOfBirth are PII and must be field-encrypted with Huawei DEW before go-live.
+ * Player account. Government ID numbers and KYC documents are never stored here; they stay with bingo-kyc.
+ * email, phone and dateOfBirth hold CIPHERTEXT (PiiCipher, keys in DEW): encrypt when writing, decrypt only where the
+ * value is shown. Lookups and the one-account-per-person rule use the blind indexes emailHash / phoneHash.
  */
 @Getter
 @Setter
@@ -25,10 +25,16 @@ public class UserAccount {
     /** Stored lower-case. */
     private String username;
     private String passwordHash;
+    /** Encrypted lower-cased email. */
     private String email;
-    /** E.164. */
+    /** PiiCipher.blindIndex of the lower-cased email. */
+    private String emailHash;
+    /** Encrypted E.164 phone. */
     private String phone;
-    private LocalDate dateOfBirth;
+    /** PiiCipher.blindIndex of the E.164 phone. */
+    private String phoneHash;
+    /** Encrypted ISO date (yyyy-MM-dd). */
+    private String dateOfBirth;
     private String countryCode;
     private String defaultCurrency;
     private AccountStatus status;

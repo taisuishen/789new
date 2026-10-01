@@ -1,5 +1,6 @@
 package com.bingo789.kyc.service;
 
+import com.bingo789.common.core.crypto.PiiCipher;
 import com.bingo789.common.core.time.BingoTime;
 import com.bingo789.kyc.config.KycConfigService;
 import com.bingo789.kyc.domain.KycRecord;
@@ -28,6 +29,7 @@ public class KycResultService {
     private final KycRecordMapper mapper;
     private final KycConfigService config;
     private final UserKycSync userSync;
+    private final PiiCipher pii;
 
     public void onJob(RunPodJob job) {
         KycRecord record = find(job);
@@ -55,7 +57,7 @@ public class KycResultService {
         int rows = mapper.complete(record.getId(), status.code(), decision == null ? "error" : decision,
                 json(output.get("reasons")), json(output.get("reasonsEn")), gender(text(output, "gender")),
                 number(faceMatch, "distance"), number(faceMatch, "threshold"),
-                result == null || result.isNull() ? null : result.toString(), BingoTime.now());
+                result == null || result.isNull() ? null : pii.encrypt(result.toString()), BingoTime.now());
         if (rows == 0) {
             log.info("KYC submission {} already closed, late RunPod result ({}) ignored", record.getId(), decision);
             return false;

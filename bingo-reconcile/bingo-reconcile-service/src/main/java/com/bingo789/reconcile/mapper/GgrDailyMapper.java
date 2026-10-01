@@ -9,7 +9,6 @@ import org.apache.ibatis.annotations.Select;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -22,20 +21,18 @@ public interface GgrDailyMapper {
     @Delete("DELETE FROM ggr_daily WHERE stat_date = #{statDate}")
     int deleteDay(@Param("statDate") LocalDate statDate);
 
-    /** [from, to) are the UTC+8 bounds of the reporting day. */
+    /** Rows of one reporting day as summed by StarRocks (ReconcileDw#ggrRows); ggr = bet - payout. */
     @Insert("""
+            <script>
             INSERT INTO ggr_daily (stat_date, user_line, provider_code, game_code, currency, bet, payout, ggr, bet_count)
-            SELECT #{statDate}, user_line, provider_code, game_code, currency,
-                   SUM(bet_amount - rollback_amount),
-                   SUM(payout_amount - payout_reversal_amount + adjust_amount),
-                   SUM(bet_amount - rollback_amount - payout_amount + payout_reversal_amount - adjust_amount),
-                   SUM(bet_count)
-              FROM recon_platform_hourly
-             WHERE stat_hour >= #{from} AND stat_hour < #{to}
-             GROUP BY user_line, provider_code, game_code, currency
+            VALUES
+            <foreach collection="rows" item="r" separator=",">
+              (#{statDate}, #{r.userLine}, #{r.providerCode}, #{r.gameCode}, #{r.currency}, #{r.bet}, #{r.payout},
+               #{r.bet} - #{r.payout}, #{r.betCount})
+            </foreach>
+            </script>
             """)
-    int insertDayFromHourly(@Param("statDate") LocalDate statDate, @Param("from") LocalDateTime from,
-                            @Param("to") LocalDateTime to);
+    int insertDay(@Param("statDate") LocalDate statDate, @Param("rows") List<GgrRow> rows);
 
     /** Back-office report: totals (all lines) per day, provider and currency; both dates inclusive. */
     @Select("""

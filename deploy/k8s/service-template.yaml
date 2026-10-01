@@ -1,21 +1,20 @@
 # Generic manifest for the remaining services. Replace the placeholders and apply once per service
 # (1M sizing, docs/capacity-1m.md):
 #
-#   __SERVICE__       __PORT__ __XXL_PORT__ __NODE_POOL__ __PRIORITY_CLASS__ __DB_POOL_SIZE__  scaling
-#   bingo-user          8101     9101        general       bingo-online        16    HPA 6..30  + CronHPA
-#   bingo-lobby         8104     9104        general       bingo-online         8    HPA 6..30  + CronHPA
-#   bingo-bet-record    8105     9105        consumer      bingo-async          8    KEDA 12..64 (lag + CPU)
-#   bingo-payment       8106     9106        general       bingo-online        16    HPA 3..15  + CronHPA
-#   bingo-risk          8107     9107        general       bingo-async          8    HPA 2..8
-#   bingo-promotion     8108     9108        consumer      bingo-async          8    KEDA 8..32
-#   bingo-reconcile     8109     9109        consumer      bingo-async          8    KEDA 8..32
-#   bingo-turnover      8110     9110        consumer      bingo-async          8    KEDA 8..32 (sharded)
-#   bingo-kyc           8111     9111        general       bingo-online         8    HPA 2..10
+#   __SERVICE__       __PORT__ __XXL_PORT__ __NODE_POOL__ __PRIORITY_CLASS__ __DB_POOL_SIZE__
+#   bingo-user          8101     9101        general       bingo-online        16
+#   bingo-lobby         8104     9104        general       bingo-online         8
+#   bingo-bet-record    8105     9105        consumer      bingo-async          8
+#   bingo-payment       8106     9106        general       bingo-online        16
+#   bingo-risk          8107     9107        general       bingo-async          8
+#   bingo-promotion     8108     9108        consumer      bingo-async          8
+#   bingo-reconcile     8109     9109        consumer      bingo-async          8
+#   bingo-turnover      8110     9110        consumer      bingo-async          8
+#   bingo-kyc           8111     9111        general       bingo-online         8
 #
 #   bingo-payment is also the backend of /notify/** in ingress-callback.yaml. bingo-kyc receives the RunPod
 #   webhooks (ingress-callback.yaml, listener 8443).
-#   HPAs: autoscaling-hpa.yaml; KEDA ScaledObjects: autoscaling-keda.yaml; CronHPA: autoscaling-cronhpa.yaml.
-#   A workload has EITHER an HPA OR a KEDA ScaledObject, never both.
+#   Scaling: one KEDA ScaledObject per service in autoscaling.yaml (min / max per stage in its header).
 #
 #   bash:        sed -e 's/__SERVICE__/bingo-user/g' -e 's/__XXL_PORT__/9101/g' -e 's/__PORT__/8101/g' \
 #                    -e 's/__NODE_POOL__/general/g' -e 's/__PRIORITY_CLASS__/bingo-online/g' \
@@ -27,16 +26,15 @@
 # Needs Secret <service>-db (DB_USER / DB_PASSWORD).
 # Every service that writes rows runs as a StatefulSet so WORKER_ID = pod ordinal is unique per instance.
 #
-# Optional ConfigMap <service>-env is loaded when it exists. bingo-bet-record and bingo-turnover use it
-# (bingo-bet-record-shards.yaml, bingo-turnover-shards.yaml)
-# to run sharded: SPRING_PROFILES_ACTIVE=sharding + 16 own TaurusDB instances; DB_POOL_SIZE is then the pool size
-# PER shard database (bet-record 64 pods x 8 = 512, turnover 32 x 8 = 256 connections per primary at the KEDA
-# ceiling; the two may share the 16 instances: different schemas, same shard numbers).
+# Optional ConfigMap <service>-env is loaded when it exists: bingo-kyc (bingo-kyc-env.yaml: OBS endpoint and
+# bucket), bingo-reconcile (bingo-reconcile-env.yaml: StarRocks FE), bingo-bet-record and bingo-turnover (bingo-bet-record-shards.yaml, bingo-turnover-shards.yaml: run
+# sharded, SPRING_PROFILES_ACTIVE=sharding + the host of each of the 16 shard databases). For the sharded services
+# DB_POOL_SIZE is the pool size PER shard database: connections per instance = pods x databases on it x pool.
 #
-# Shared TaurusDB connection budget (services on __TAURUSDB_SHARED_HOST__), at maxReplicas:
-#   user 30x16 + lobby 30x8 + payment 15x16 + risk 8x8 + promotion 32x8 + reconcile 32x8 + game-integration 160x4
-#   = 480 + 240 + 240 + 64 + 256 + 256 + 640 = 2,176 connections. Keep below ~70% of the instance's
-#   max_connections. bet-record is NOT on the shared instance at 1M (its ~125k rounds/s go to its own shards).
+# Shared TaurusDB connection budget (services on __TAURUSDB_SHARED_HOST__) at the 1M maxReplicaCount:
+#   user 30x16 + lobby 30x8 + payment 15x16 + risk 8x8 + promotion 32x8 + reconcile 2x8 + game-integration 160x4
+#   = 480 + 240 + 240 + 64 + 256 + 16 + 640 = 1,936 connections. Keep below ~70% of the instance's
+#   max_connections. bet-record and turnover are NOT on the shared instance (their own shard databases).
 ---
 apiVersion: v1
 kind: Service
@@ -86,7 +84,7 @@ metadata:
     app.kubernetes.io/part-of: bingo
 spec:
   serviceName: __SERVICE__-headless
-  # replicas is owned by the HPA / KEDA (their minReplicas = off-peak baseline). Deliberately not set here:
+  # replicas is owned by KEDA (autoscaling.yaml; 1 pod without it). Deliberately not set here:
   # re-applying a manifest that contains spec.replicas would reset a scaled-out workload during a peak.
   podManagementPolicy: Parallel
   updateStrategy:
@@ -108,6 +106,9 @@ spec:
         prometheus.io/path: /actuator/prometheus
     spec:
       priorityClassName: __PRIORITY_CLASS__
+      # SWR pull secret that CCE creates in every namespace (verify: kubectl -n bingo get secret default-secret)
+      imagePullSecrets:
+        - name: default-secret
       automountServiceAccountToken: false
       enableServiceLinks: false
       terminationGracePeriodSeconds: 60
@@ -189,8 +190,6 @@ spec:
             # Hikari maximum-pool-size (application.yml: ${DB_POOL_SIZE:<default>}); see the budget in the header.
             - name: DB_POOL_SIZE
               value: "__DB_POOL_SIZE__"
-            - name: XXL_JOB_EXECUTOR_PORT
-              value: "__XXL_PORT__"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -199,7 +198,7 @@ spec:
               value: __SERVICE__
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "k8s.namespace.name=bingo,k8s.pod.name=$(POD_NAME)"
-          # 4 vCPU / 8 GiB, requests == limits: the HPA / KEDA CPU utilisation is measured against requests, so
+          # 4 vCPU / 8 GiB, requests == limits: the KEDA cpu trigger is measured against requests, so
           # equal limits keep the target meaningful (no bursting above 100%) and give Guaranteed QoS.
           resources:
             requests:
@@ -230,8 +229,9 @@ spec:
             failureThreshold: 2
           lifecycle:
             preStop:
+              # marker: de-register from Nacos first (RegistryDrain), keep serving while callers drop this pod
               exec:
-                command: ["sh", "-c", "sleep 15"]
+                command: ["sh", "-c", "touch /tmp/draining; sleep 15"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

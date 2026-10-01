@@ -1,0 +1,16 @@
+# bingo-reconcile settings loaded by service-template.yaml through the optional ConfigMap <service>-env. Apply BEFORE
+# rendering the template for bingo-reconcile. Every figure reconcile compares or reports is summed by StarRocks
+# (deploy/starrocks/bingo_dw.sql); it connects to the FE over the MySQL protocol with a READ-ONLY account.
+# DW_PASSWORD: Secret bingo-reconcile-secret (production: CSMS secret bingo-reconcile-dw-password, dew-secrets.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bingo-reconcile-env
+  namespace: bingo
+  labels:
+    app.kubernetes.io/name: bingo-reconcile
+    app.kubernetes.io/part-of: bingo
+data:
+  DW_HOST: "__STARROCKS_FE_HOST__"      # CloudTable StarRocks FE address (private network)
+  DW_PORT: "9030"
+  DW_USER: "report_ro"
